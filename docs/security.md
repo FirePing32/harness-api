@@ -102,11 +102,23 @@ carries no rlimit fields on any unix and there is no pre-exec hook. The model's
 command stays a separate argv element, so it is never re-parsed and a syntax
 error still reports the line number the model would expect.
 
-These cannot be lifted by the command. Bash's bare `ulimit -t N` sets the soft
-and hard limits together, and lowering a hard limit is irreversible for a
-non-root process; a command that tries gets "Operation not permitted". There is
-a test asserting exactly that, because without it the mechanism would be
-decorative.
+These cannot be lifted by the command: lowering a hard limit is irreversible
+for a non-root process, and a command that tries gets "Operation not
+permitted". There is a test asserting exactly that, because without it the
+mechanism would be decorative.
+
+The wrapper is `bash` rather than `sh`, which is load-bearing. `ulimit -f`
+counts blocks and the block size is shell-dependent — bash uses 1024 bytes,
+dash uses 512. With `/bin/sh` as the wrapper on a system where that is dash,
+the limit was set in one unit and enforced against a command reading the other,
+so **every file-size ceiling was applied at half its configured value**. CI on
+Ubuntu found it; macOS never would have.
+
+The processor-time ceiling sets the soft limit below the hard one rather than
+both together. With them equal, Linux delivers SIGXCPU and SIGKILL in the same
+instant and the wait status reports the SIGKILL — which is the same code as the
+timeout sweep, leaving nothing able to tell a processor-time kill from a
+timeout. macOS reported SIGXCPU either way, so this was also a CI finding.
 
 **The processor-time ceiling is not a second wall clock.** At the default
 factor it is the most CPU time a command respecting its timeout could possibly

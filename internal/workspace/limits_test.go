@@ -34,6 +34,17 @@ func TestLimitsArgvKeepsTheCommandUnparsed(t *testing.T) {
 	if got[len(got)-2] != "-c" || got[len(got)-3] != "bash" {
 		t.Errorf("the command is not run by bash -c: %v", got)
 	}
+
+	// The wrapper must be bash too. `ulimit -f` counts blocks and the block
+	// size is shell-dependent — bash 1024, dash 512 — so a wrapper that is not
+	// the same shell as the command enforces a different number than it was
+	// given. With /bin/sh on Ubuntu, where that is dash, every file-size
+	// ceiling was applied at half its configured value and the behavioural
+	// test still passed. Reproduced with dash directly before this was changed.
+	if got[0] != "bash" {
+		t.Errorf("wrapper is %q, not bash: the shell that sets a block-counted "+
+			"limit must be the shell that runs under it", got[0])
+	}
 }
 
 func TestNoLimitsMeansNoWrapper(t *testing.T) {
@@ -129,8 +140,73 @@ func TestFileSizeLimitStopsARunawayWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Size() > 128<<10 {
-		t.Errorf("wrote %d bytes under a 64 KiB ceiling", info.Size())
+
+	// Bounded tightly on both sides, because `ulimit -f` counts blocks and the
+	// block size differs between shells — bash uses 1024 bytes, dash uses 512.
+	// An earlier version of this test allowed twice the ceiling as slack, which
+	// is precisely the size of the error it was supposed to catch: with /bin/sh
+	// as the wrapper on Ubuntu, every limit was enforced at half its value and
+	// this test passed anyway.
+	const want = 64 << 10
+	if info.Size() > want {
+		t.Errorf("wrote %d bytes under a %d-byte ceiling", info.Size(), want)
+	}
+	if info.Size() < want/2 {
+		t.Errorf("wrote only %d bytes under a %d-byte ceiling; the limit is being "+
+			"applied in the wrong unit", info.Size(), want)
+	}
+}
+
+func TestCPULimitLeavesRoomBetweenSoftAndHard(t *testing.T) {
+	// The soft limit is the one meant to fire, because SIGXCPU is
+	// distinguishable and SIGKILL is not — 137 is also what the timeout sweep
+	// produces. With soft equal to hard, Linux reports the SIGKILL and nothing
+	// downstream can tell a processor-time kill from a timeout.
+	shell, dir := shellTest(t)
+
+	res, err := shell.Run(context.Background(), ShellRequest{
+		Command:   "ulimit -S -t; ulimit -H -t",
+		Dir:       dir,
+		Timeout:   20 * time.Second,
+		TailBytes: 4096,
+		Limits:    Limits{CPUSeconds: 60},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fields := strings.Fields(res.Output)
+	if len(fields) < 2 {
+		t.Fatalf("output = %q", res.Output)
+	}
+	if fields[0] != "60" {
+		t.Errorf("soft limit = %q, want 60", fields[0])
+	}
+	if fields[1] == fields[0] {
+		t.Errorf("hard limit equals soft (%q); SIGXCPU and SIGKILL will arrive "+
+			"together and the kill becomes indistinguishable from a timeout", fields[1])
+	}
+}
+
+func TestFileSizeCeilingIsSetAndReadInTheSameUnit(t *testing.T) {
+	// The wrapper is bash, not sh, so that the shell setting the block-counted
+	// limit and the shell running under it agree on what a block is.
+	shell, dir := shellTest(t)
+
+	res, err := shell.Run(context.Background(), ShellRequest{
+		Command:   "ulimit -f",
+		Dir:       dir,
+		Timeout:   20 * time.Second,
+		TailBytes: 4096,
+		Limits:    Limits{FileSizeKB: 4096},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got := strings.TrimSpace(res.Output); got != "4096" {
+		t.Errorf("ulimit -f reports %q for a 4096 KiB ceiling; the wrapper and the "+
+			"command disagree about block size", got)
 	}
 }
 

@@ -64,11 +64,26 @@ func (l Limits) Empty() bool {
 // fail work the user asked for.
 func (l Limits) prelude() string {
 	var parts []string
+
 	if l.CPUSeconds > 0 {
-		parts = append(parts, fmt.Sprintf("ulimit -t %d 2>/dev/null || true", l.CPUSeconds))
+		// Soft below hard, in two steps, and the order matters.
+		//
+		// Bash's bare `ulimit -t N` sets both together. With soft equal to hard,
+		// Linux delivers SIGXCPU at the soft limit and SIGKILL at the hard one
+		// in the same instant, and the wait status reports the SIGKILL — which
+		// is the same code as the timeout sweep, so nothing downstream can tell
+		// the two apart. Leaving a gap means SIGXCPU arrives on its own and is
+		// distinguishable. macOS happened to report SIGXCPU either way; Ubuntu
+		// did not, and CI is what said so.
+		//
+		// Both are set first because lowering the hard limit alone, while soft
+		// is still unlimited, would leave soft above hard and fail with EINVAL.
+		parts = append(parts,
+			fmt.Sprintf("ulimit -t %d 2>/dev/null || true", l.CPUSeconds+cpuHardGrace),
+			fmt.Sprintf("ulimit -S -t %d 2>/dev/null || true", l.CPUSeconds))
 	}
+
 	if l.FileSizeKB > 0 {
-		// Bash's -f unit is 1024-byte blocks.
 		parts = append(parts, fmt.Sprintf("ulimit -f %d 2>/dev/null || true", l.FileSizeKB))
 	}
 	if l.Processes > 0 {
@@ -77,7 +92,21 @@ func (l Limits) prelude() string {
 	return strings.Join(parts, "; ")
 }
 
+// cpuHardGrace is how far the hard processor-time limit sits above the soft
+// one. Only a backstop for a process that somehow survives SIGXCPU; the soft
+// limit is the ceiling that is meant to fire.
+const cpuHardGrace = 5
+
 // Argv builds the command line for a shell invocation under these limits.
+//
+// The wrapper is bash rather than sh, and that is not a stylistic choice.
+// `ulimit -f` counts blocks, and the block size differs between shells: bash
+// uses 1024 bytes, dash and POSIX-mode shells use 512. With `sh` as the
+// wrapper, the limit was set by whatever /bin/sh happened to be and read back
+// by bash — which on Ubuntu, where /bin/sh is dash, meant every configured
+// file-size ceiling was silently enforced at half its value. Setting and
+// running in the same shell removes the ambiguity rather than compensating for
+// it.
 //
 // With no limits set it is the plain `bash -c <command>` this server has always
 // run, so the wrapper is not in the path at all when it would do nothing.
@@ -85,7 +114,7 @@ func (l Limits) Argv(command string) []string {
 	if l.Empty() {
 		return []string{"bash", "-c", command}
 	}
-	return []string{"sh", "-c", l.prelude() + `; exec "$0" "$@"`, "bash", "-c", command}
+	return []string{"bash", "-c", l.prelude() + `; exec "$0" "$@"`, "bash", "-c", command}
 }
 
 // Describe renders the limits for a log line or an error message.
