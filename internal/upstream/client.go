@@ -19,9 +19,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
-	"github.com/prakhargurunani/harness-api/internal/logx"
-	"github.com/prakhargurunani/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/logx"
+	"github.com/FirePing32/harness-api/internal/oai"
 )
 
 // maxErrorBodyBytes caps how much of a failed response we read. Some providers

@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
-	"github.com/prakhargurunani/harness-api/internal/workspace"
+	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
 // newSession builds a session over a temp workspace seeded with files.

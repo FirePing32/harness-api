@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
-	"github.com/prakhargurunani/harness-api/internal/logx"
-	"github.com/prakhargurunani/harness-api/internal/server"
+	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/logx"
+	"github.com/FirePing32/harness-api/internal/server"
 )
 
 func main() {

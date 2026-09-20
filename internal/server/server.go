@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
-	"github.com/prakhargurunani/harness-api/internal/upstream"
+	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/upstream"
 )
 
 // Server owns the route table. It is constructed once at startup; the returned

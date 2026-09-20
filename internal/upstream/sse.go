@@ -10,8 +10,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/prakhargurunani/harness-api/internal/logx"
-	"github.com/prakhargurunani/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/logx"
+	"github.com/FirePing32/harness-api/internal/oai"
 )
 
 // Reading a streamed completion.

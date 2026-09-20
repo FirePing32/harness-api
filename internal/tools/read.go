@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 
-	"github.com/prakhargurunani/harness-api/internal/workspace"
+	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
 // Read shows the contents of a file, line-numbered and paginated.

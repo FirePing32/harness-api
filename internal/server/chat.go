@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/prakhargurunani/harness-api/internal/oai"
-	"github.com/prakhargurunani/harness-api/internal/upstream"
+	"github.com/FirePing32/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/upstream"
 )
 
 // handleChatCompletions serves POST /v1/chat/completions.

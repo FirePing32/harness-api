@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/config"
 )
 
 func newManager(t *testing.T, ttl time.Duration) *Manager {

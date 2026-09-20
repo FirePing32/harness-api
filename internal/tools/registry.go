@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/prakhargurunani/harness-api/internal/oai"
-	"github.com/prakhargurunani/harness-api/internal/workspace"
+	"github.com/FirePing32/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
 // Registry maps tool names to implementations and dispatches calls.

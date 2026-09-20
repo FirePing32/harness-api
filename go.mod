@@ -1,4 +1,4 @@
-module github.com/prakhargurunani/harness-api
+module github.com/FirePing32/harness-api
 
 go 1.26.3
 

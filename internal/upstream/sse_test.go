@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prakhargurunani/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/oai"
 )
 
 // Transcript-driven tests.

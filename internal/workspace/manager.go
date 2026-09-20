@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/config"
 )
 
 // Manager owns the live sessions and reclaims the ones nobody is using.

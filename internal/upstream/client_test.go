@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
-	"github.com/prakhargurunani/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/oai"
 )
 
 func discardLogger() *slog.Logger {

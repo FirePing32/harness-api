@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/oai"
 )
 
 type ctxKey int

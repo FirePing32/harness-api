@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/prakhargurunani/harness-api/internal/config"
-	"github.com/prakhargurunani/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/oai"
 )
 
 // newTestServer builds a Server pointed at a stub provider. The stub's handler is

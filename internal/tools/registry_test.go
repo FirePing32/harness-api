@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/prakhargurunani/harness-api/internal/oai"
-	"github.com/prakhargurunani/harness-api/internal/workspace"
+	"github.com/FirePing32/harness-api/internal/oai"
+	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
 // fakeTool is a configurable Tool for exercising dispatch.

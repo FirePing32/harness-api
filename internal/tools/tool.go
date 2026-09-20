@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/prakhargurunani/harness-api/internal/workspace"
+	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
 // Tool is one capability offered to the model.
