@@ -88,6 +88,7 @@ const (
 	CodeUnknownTool = "UNKNOWN_TOOL"
 	CodePanic       = "TOOL_PANIC"
 	CodeCancelled   = "CANCELLED"
+	CodeDisabled    = "TOOL_DISABLED"
 
 	// CodeNoMatch and CodeAmbiguous are the two edit failures the model is
 	// expected to recover from on its own, and the ones whose error text does

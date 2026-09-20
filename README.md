@@ -4,11 +4,10 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: usable, incomplete.** Phases 0–4 of 11 are done. The agent loop
-> works end to end: a request runs as many upstream turns as the task needs,
-> with `read`, `glob`, `grep`, `edit` and `write` against a confined workspace.
-> Not yet implemented: the `bash` tool, streaming, provider quirk profiles, and
-> context compaction. See [Roadmap](#roadmap).
+> **Status: usable, incomplete.** Phases 0–5 of 11 are done. The agent loop
+> works end to end with the full core tool set: `read`, `glob`, `grep`, `edit`,
+> `write` and `bash`. Not yet implemented: streaming, provider quirk profiles,
+> and context compaction. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -71,17 +70,18 @@ A flag left at its zero value does not clobber a value set by file or env.
 | `-upstream-base-url` | OpenAI-compatible endpoint. |
 | `-upstream-model` | Default model when a request does not name one. |
 | `-workspace-root` | Parent directory for ephemeral workspaces. |
+| `HARNESS_SHELL_ENABLED=false` | Env only. Drops `bash`, keeping the jailed file tools. |
 | `-log-level` / `-log-format` | `debug\|info\|warn\|error`, `json\|text`. |
 
 ## Security
 
 Read this before binding to anything routable.
 
-**This server is designed to execute code on behalf of its callers.** It already
-reads and writes files in a workspace you nominate, and once the shell tool
-lands, anyone who can reach `/v1/*` can run arbitrary commands as the server's
-user. That is the feature, not a flaw — but it means the endpoint is remote code
-execution by design.
+**This server is designed to execute code on behalf of its callers.** Anyone who
+can reach `/v1/*` can run any command the server's user can run. That is the
+feature, not a flaw — but it means the endpoint is remote code execution by
+design. [docs/security.md](docs/security.md) sets out the threat model, what is
+actually bounded, and what is not.
 
 The posture is *trusted local users*: prevent accidents and limit blast radius,
 not contain an adversary.
@@ -93,9 +93,9 @@ not contain an adversary.
 - File tools are confined to the session workspace by `os.Root`, which resolves
   every path component against a held directory descriptor. A symlink out of the
   tree fails at the syscall, including one planted after the path was validated.
-- The shell tool, once implemented, will **not** be jailed. `cd /etc && cat passwd`
-  will work. Process-group kill on timeout and an output cap are ergonomics, not
-  containment.
+- `bash` is **not** jailed. `cd /etc && cat passwd` works. Process-group kill on
+  timeout and an output cap are ergonomics, not containment. Turn it off
+  entirely with `shell.enabled=false` if you only want the file tools.
 - Credentials are redacted in the log handler rather than at call sites.
   Upstream error bodies are never echoed to clients — several providers reflect
   the request, including the API key.
@@ -127,7 +127,14 @@ invariant quietly degrades into a rubber stamp once the contents leave context.
 
 **Asymmetric truncation.** File views drop the tail and tell the model how to
 continue. Shell output drops the *head*, because the error in a failed build is
-at the bottom under the progress log.
+at the bottom under the progress log; the full output spills to a file under
+`.harness/output/` that the model can page through.
+
+**`bash` is stateless per call.** A fresh `bash -c` each time, with a `workdir`
+argument instead of `cd`. Matching DeepSeek Harness here deleted the hardest
+code in the package — no sentinel framing, no shell-death respawn, no pipe
+bookkeeping — and what a persistent shell would preserve either gets passed
+explicitly or lives in the filesystem, which persists anyway.
 
 **Tool error messages are implementation, not decoration.** They are the model's
 only recovery signal, so each one says what was wrong and what to do next.
@@ -149,8 +156,8 @@ gofmt -l ./internal ./cmd
 | 2 | Streaming reader, delta accumulator, transcripts | done |
 | 3 | Workspace, path jail, fs-observation ledger, `read` + `glob` | done |
 | 4 | The agent loop, `grep` / `write` / `edit` | done |
-| 5 | `bash` and the `Shell` interface | next |
-| 6 | Session binding, agent streaming, `/v1/sessions` | |
+| 5 | `bash` and the `Shell` interface | done |
+| 6 | Session binding, agent streaming, `/v1/sessions` | next |
 | 7 | Monotonic tool guards, budgets | |
 | 8 | Provider quirk profiles and autodetect | |
 | 9 | Context compaction and token estimation | |

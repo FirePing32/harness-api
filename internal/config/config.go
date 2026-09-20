@@ -55,6 +55,7 @@ type Config struct {
 	Upstream  Upstream  `json:"upstream"`
 	Agent     Agent     `json:"agent"`
 	Workspace Workspace `json:"workspace"`
+	Shell     Shell     `json:"shell"`
 	Log       Log       `json:"log"`
 }
 
@@ -114,6 +115,31 @@ type Workspace struct {
 	IdleTTL Duration `json:"idle_ttl"`
 }
 
+// Shell bounds command execution.
+//
+// None of these are a security boundary. A command runs as the server's user
+// with no container around it, so the limits here stop accidents — a test
+// suite that hangs, a command that prints a gigabyte — and nothing more.
+// Enabled exists so an operator who wants the file tools without arbitrary
+// command execution can have exactly that.
+type Shell struct {
+	Enabled bool `json:"enabled"`
+
+	// DefaultTimeout applies when a call does not ask for one.
+	DefaultTimeout Duration `json:"default_timeout"`
+
+	// MaxTimeout is the ceiling a call may request, upward only to this point.
+	MaxTimeout Duration `json:"max_timeout"`
+
+	// TailBytes is how much of a command's output comes back. The tail, not
+	// the head: the error in a failed build is at the bottom.
+	TailBytes int `json:"tail_bytes"`
+
+	// SpillBytes caps the overflow file written when output exceeds TailBytes.
+	// Zero disables spilling, and the extra output is simply lost.
+	SpillBytes int `json:"spill_bytes"`
+}
+
 // Log configures the root logger.
 type Log struct {
 	Level  string `json:"level"`
@@ -144,6 +170,13 @@ func Default() Config {
 		Workspace: Workspace{
 			Root:    "", // resolved to os.TempDir()/harness-api at Validate
 			IdleTTL: Duration(30 * time.Minute),
+		},
+		Shell: Shell{
+			Enabled:        true,
+			DefaultTimeout: Duration(2 * time.Minute),
+			MaxTimeout:     Duration(10 * time.Minute),
+			TailBytes:      30 << 10,
+			SpillBytes:     5 << 20,
 		},
 		Log: Log{Level: "info", Format: "text"},
 	}
@@ -235,6 +268,20 @@ func (c *Config) ApplyEnv() error {
 		return err
 	}
 
+	if v, ok := os.LookupEnv("HARNESS_SHELL_ENABLED"); ok {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("HARNESS_SHELL_ENABLED: %w", err)
+		}
+		c.Shell.Enabled = b
+	}
+	if err := dur("HARNESS_SHELL_DEFAULT_TIMEOUT", &c.Shell.DefaultTimeout); err != nil {
+		return err
+	}
+	if err := dur("HARNESS_SHELL_MAX_TIMEOUT", &c.Shell.MaxTimeout); err != nil {
+		return err
+	}
+
 	str("HARNESS_LOG_LEVEL", &c.Log.Level)
 	str("HARNESS_LOG_FORMAT", &c.Log.Format)
 	return nil
@@ -296,6 +343,22 @@ func (c *Config) Validate() error {
 
 	if c.Server.MaxBodyBytes <= 0 {
 		errs = append(errs, errors.New("server.max_body_bytes must be > 0"))
+	}
+
+	if c.Shell.Enabled {
+		if c.Shell.DefaultTimeout <= 0 {
+			errs = append(errs, errors.New("shell.default_timeout must be > 0"))
+		}
+		if c.Shell.MaxTimeout < c.Shell.DefaultTimeout {
+			errs = append(errs, errors.New(
+				"shell.max_timeout must be >= shell.default_timeout"))
+		}
+		if c.Shell.TailBytes <= 0 {
+			errs = append(errs, errors.New("shell.tail_bytes must be > 0"))
+		}
+		if c.Shell.SpillBytes < 0 {
+			errs = append(errs, errors.New("shell.spill_bytes must be >= 0"))
+		}
 	}
 
 	return errors.Join(errs...)

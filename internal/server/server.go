@@ -28,14 +28,24 @@ type Server struct {
 // The order is fixed and load-bearing: it is the order definitions are sent in,
 // and a stable array is what keeps provider-side prompt caching effective from
 // one turn to the next.
-func DefaultTools() *tools.Registry {
-	return tools.NewRegistry(
+//
+// bash is offered only when it is enabled. Registering it and having it refuse
+// every call would waste a slot in the model's attention and invite it to keep
+// trying; leaving it out means the model plans around the tools it has.
+func DefaultTools(cfg *config.Config) *tools.Registry {
+	r := tools.NewRegistry(
 		tools.NewRead(),
 		tools.NewGlob(),
 		tools.NewGrep(),
 		tools.NewEdit(),
 		tools.NewWrite(),
 	)
+	if cfg.Shell.Enabled {
+		if err := r.Register(tools.NewBash(workspace.NewLocalShell(), cfg.Shell)); err != nil {
+			panic(err)
+		}
+	}
+	return r
 }
 
 // New builds a Server and registers its routes.
@@ -53,7 +63,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		sessions: sessions,
 		agent: agent.New(agent.Options{
 			Upstream: client,
-			Registry: DefaultTools(),
+			Registry: DefaultTools(cfg),
 			Config:   cfg.Agent,
 			Log:      log,
 		}),

@@ -36,10 +36,17 @@ type ignoreRule struct {
 	dirOnly bool
 }
 
-// alwaysIgnored applies regardless of .gitignore. .git is not merely noise —
-// letting an agent read or rewrite object files is a way to corrupt a
-// repository that looks like an ordinary edit.
-var alwaysIgnored = []string{".git/"}
+// alwaysIgnored applies regardless of .gitignore.
+//
+// .git is not merely noise — letting an agent read or rewrite object files is
+// a way to corrupt a repository through what looks like an ordinary edit.
+//
+// .harness holds this server's own overflow files. Excluding it keeps a
+// workspace-wide grep from matching the output of a command the agent ran
+// minutes ago, which reads as a real result and is not one. The directory is
+// still reachable by path, because reading a spilled build log is the whole
+// reason it was written.
+var alwaysIgnored = []string{".git/", ".harness/"}
 
 // LoadIgnore reads the workspace's root .gitignore, if present. A missing or
 // unreadable file is not an error: it only means fewer rules.

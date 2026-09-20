@@ -100,6 +100,12 @@ func run(args []string) error {
 	if len(cfg.Server.AuthTokens) == 0 {
 		log.Warn("no auth tokens configured; any local process can drive this agent")
 	}
+	if cfg.Shell.Enabled {
+		log.Warn("the bash tool is enabled; callers of this API can run arbitrary "+
+			"commands as this process's user, and those commands are not confined "+
+			"to the workspace",
+			"disable_with", "shell.enabled=false or HARNESS_SHELL_ENABLED=false")
+	}
 
 	srv, err := server.New(&cfg, log)
 	if err != nil {
