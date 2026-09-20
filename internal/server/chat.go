@@ -3,9 +3,11 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/FirePing32/harness-api/internal/agent"
 	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/upstream"
 	"github.com/FirePing32/harness-api/internal/workspace"
@@ -16,10 +18,6 @@ import (
 // The request is run through the agent loop rather than forwarded, so a single
 // call may produce many upstream calls. The reported usage is the total across
 // all of them.
-//
-// Session binding is still minimal: every request gets a fresh ephemeral
-// workspace, which is destroyed when it goes idle. Reattaching to an existing
-// session over several requests arrives with the binding resolver.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
@@ -28,6 +26,11 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		oai.WriteError(w, err, reqID)
 		return
 	}
+
+	// Resolved before the model default is applied, because the model string is
+	// one of the channels a session id can arrive through and the suffix has to
+	// come off before anything treats the remainder as a model name.
+	binding := ResolveBinding(r, req)
 
 	if req.Model == "" {
 		req.Model = s.upstream.DefaultModel()
@@ -39,29 +42,33 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if req.Stream {
-		// Streaming an agent run is not the same problem as streaming a
-		// completion — intermediate turns have to be buffered or the answer
-		// arrives interleaved with the model's tool-calling preamble. Saying so
-		// plainly beats a hang or a silently non-streamed response.
-		oai.WriteError(w, oai.NewInvalidRequest(
-			"streaming is not implemented yet; retry with \"stream\": false", "stream"), reqID)
-		return
-	}
-
-	session, release, err := s.acquireSession(req)
+	session, release, err := s.acquireSession(binding)
 	if err != nil {
 		oai.WriteError(w, err, reqID)
 		return
 	}
 	defer release()
 
+	// Set before anything is written, so it survives into a streaming response
+	// where headers are flushed with the very first frame.
+	w.Header().Set(HeaderSession, session.ID())
+
+	log := s.log.With(
+		"request_id", reqID,
+		"session_id", session.ID(),
+		"binding", binding.Source)
+
+	if req.Stream {
+		s.streamAgentRun(w, r, req, session, log)
+		return
+	}
+
 	result, err := s.agent.Run(r.Context(), session, req)
 	if err != nil {
 		if r.Context().Err() != nil {
 			// The caller hung up. Nothing to write to, and nothing worth logging
 			// as an error.
-			s.log.Debug("client disconnected during the agent run", "request_id", reqID)
+			log.Debug("client disconnected during the agent run")
 			return
 		}
 		var apiErr *oai.APIError
@@ -69,25 +76,85 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 			oai.WriteError(w, apiErr, reqID)
 			return
 		}
-		s.log.Error("agent run failed",
-			"request_id", reqID, "session_id", session.ID(), "error", err)
+		log.Error("agent run failed", "error", err)
 		oai.WriteError(w, upstream.ToAPIError(err), reqID)
 		return
 	}
 
-	s.log.Info("agent run complete",
-		"request_id", reqID,
-		"session_id", session.ID(),
+	log.Info("agent run complete",
 		"stop", result.Stop,
 		"turns", result.Turns,
 		"total_tokens", result.Usage.TotalTokens,
 		"duration_ms", result.Elapsed.Milliseconds())
 
-	// The session id goes back in a header so a caller can reattach to this
-	// workspace, even though nothing reads it back yet.
-	w.Header().Set("X-Harness-Session", session.ID())
-
 	writeJSON(w, http.StatusOK, result.ToResponse(reqID, req.Model, time.Now().Unix()))
+}
+
+// streamAgentRun serves a streaming request.
+//
+// The headers go out immediately so the client sees a 200 and stops waiting,
+// then the connection is held with keepalive comments while the agent works.
+// Once the headers are written there is no way back to an HTTP status code, so
+// every failure after this point has to be reported inside the stream.
+func (s *Server) streamAgentRun(
+	w http.ResponseWriter, r *http.Request,
+	req *oai.ChatCompletionRequest, session *workspace.Session, log *slog.Logger,
+) {
+	reqID := RequestIDFromContext(r.Context())
+
+	stream, err := newSSEStream(w, reqID, req.Model)
+	if err != nil {
+		oai.WriteError(w, err, reqID)
+		return
+	}
+	stream.sendRole()
+
+	var emit agent.Emit
+	if req.Harness != nil && req.Harness.StreamEvents {
+		emit = stream.sendEvent
+	}
+
+	stopKeepalive := stream.keepalive()
+	result, runErr := s.agent.RunWithEvents(r.Context(), session, req, emit)
+	stopKeepalive()
+
+	if runErr != nil {
+		if r.Context().Err() != nil {
+			log.Debug("client disconnected during the agent run")
+			return
+		}
+		var apiErr *oai.APIError
+		if !errors.As(runErr, &apiErr) {
+			log.Error("agent run failed", "error", runErr)
+			apiErr = upstream.ToAPIError(runErr)
+		}
+		stream.sendError(apiErr)
+		stream.done()
+		return
+	}
+
+	stream.sendContent(result.Final.Content.String())
+	stream.sendFinish(result.Stop.FinishReason(), result.Usage, includeUsage(req))
+	stream.done()
+
+	if err := stream.Err(); err != nil {
+		log.Debug("client disconnected while the answer was being written", "error", err)
+		return
+	}
+
+	log.Info("agent run complete",
+		"stop", result.Stop,
+		"turns", result.Turns,
+		"total_tokens", result.Usage.TotalTokens,
+		"duration_ms", result.Elapsed.Milliseconds(),
+		"streamed", true)
+}
+
+// includeUsage reports whether the caller asked for a usage frame. OpenAI made
+// this opt-in because the extra final chunk breaks clients that assume the
+// stream ends at the finish reason.
+func includeUsage(req *oai.ChatCompletionRequest) bool {
+	return req.StreamOptions != nil && req.StreamOptions.IncludeUsage
 }
 
 // acquireSession resolves the workspace for a request and locks it.
@@ -96,13 +163,13 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 // the whole run rather than per tool call: tools mutate both the filesystem and
 // the observation ledger, and two requests interleaving on one workspace would
 // produce failures nobody could reconstruct from a transcript.
-func (s *Server) acquireSession(req *oai.ChatCompletionRequest) (*workspace.Session, func(), error) {
-	if req.Harness != nil && req.Harness.SessionID != "" {
-		session, ok := s.sessions.Get(req.Harness.SessionID)
+func (s *Server) acquireSession(b Binding) (*workspace.Session, func(), error) {
+	if b.SessionID != "" {
+		session, ok := s.sessions.Get(b.SessionID)
 		if !ok {
 			return nil, nil, oai.NewInvalidRequest(
-				"unknown or expired session "+req.Harness.SessionID+
-					"; omit harness.session_id to start a new one", "harness.session_id")
+				"unknown or expired session "+b.SessionID+
+					"; omit the session to start a new one", b.Source)
 		}
 		if !session.TryLock() {
 			// Blocking would mean waiting out another request's agent loop, which
@@ -110,7 +177,7 @@ func (s *Server) acquireSession(req *oai.ChatCompletionRequest) (*workspace.Sess
 			return nil, nil, &oai.APIError{
 				Status: http.StatusConflict, Type: "invalid_request_error",
 				Message: "this session is already handling another request",
-				Param:   "harness.session_id",
+				Param:   b.Source,
 			}
 		}
 		session.Touch()
@@ -121,11 +188,11 @@ func (s *Server) acquireSession(req *oai.ChatCompletionRequest) (*workspace.Sess
 		session *workspace.Session
 		err     error
 	)
-	if req.Harness != nil && req.Harness.Workspace != "" {
-		session, err = s.sessions.CreateAt(req.Harness.Workspace)
+	if b.Workspace != "" {
+		session, err = s.sessions.CreateAt(b.Workspace)
 		if err != nil {
 			return nil, nil, oai.NewInvalidRequest(
-				"could not use that workspace: "+err.Error(), "harness.workspace")
+				"could not use that workspace: "+err.Error(), b.Source)
 		}
 	} else {
 		session, err = s.sessions.CreateEphemeral()

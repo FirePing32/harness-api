@@ -4,10 +4,11 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: usable, incomplete.** Phases 0–5 of 11 are done. The agent loop
-> works end to end with the full core tool set: `read`, `glob`, `grep`, `edit`,
-> `write` and `bash`. Not yet implemented: streaming, provider quirk profiles,
-> and context compaction. See [Roadmap](#roadmap).
+> **Status: usable, incomplete.** Phases 0–6 of 11 are done. The agent loop
+> works end to end with the full core tool set — `read`, `glob`, `grep`,
+> `edit`, `write`, `bash` — plus streaming and persistent sessions. Not yet
+> implemented: provider quirk profiles and context compaction. See
+> [Roadmap](#roadmap).
 
 ## Why
 
@@ -52,12 +53,67 @@ print(resp.choices[0].message.content)
 ```
 
 Omit `harness.workspace` and the agent gets a fresh empty workspace instead.
-The response carries an `X-Harness-Session` header; send it back as
-`harness.session_id` to continue in the same workspace, which also preserves
-what the agent has already read.
 
 `usage` is the total across every upstream call the request made, not just the
 last one.
+
+### Sessions
+
+Every response carries an `X-Harness-Session` header. Send that id back to
+continue in the same workspace, which also preserves what the agent has
+already read — so a follow-up edit does not need a re-read.
+
+There are four ways to name a session, tried in this order. They all exist
+because gateways disagree about what they forward: some drop unknown headers
+but keep unknown body fields, others do the reverse.
+
+| Channel | Example |
+|---|---|
+| `X-Harness-Session` header | `X-Harness-Session: ws_abc…` |
+| `X-Harness-Workspace` header | `X-Harness-Workspace: /path/to/project` |
+| Body | `"harness": {"session_id": "ws_abc…"}` |
+| Model suffix | `"model": "gpt-4.1::ws_abc…"` |
+
+The model suffix is ugly and always survives, because `model` is required and
+no proxy interprets it. The suffix is stripped before the model name reaches
+the provider.
+
+Sessions can also be managed directly:
+
+```sh
+curl -X POST localhost:8080/v1/sessions -d '{"workspace":"/path/to/project"}'
+curl localhost:8080/v1/sessions
+curl -X DELETE localhost:8080/v1/sessions/ws_abc…
+```
+
+Deleting an ephemeral session removes its directory; a session bound to a
+directory you nominated gives up the handle and leaves your files alone. The
+response says which happened.
+
+### Streaming
+
+`"stream": true` works, with one limitation worth knowing. An agent run has
+several generations and only the last is the answer — the others are the model
+saying "let me check that file" before a tool call. Concatenating them reads
+like a transcript of someone thinking out loud, so only the final turn is
+emitted.
+
+The consequence is that the final turn is not known to be final until it
+arrives without tool calls, so its content is produced before streaming begins.
+It is then sent in pieces so progressive renderers behave normally, but there
+is **no time-to-first-token benefit** over a non-streaming request. What
+streaming buys is the connection staying open and, with the option below,
+visibility into the work.
+
+Set `harness.stream_events` for structured progress on `choices[0].delta.harness`:
+
+```json
+{"type": "tool_start", "turn": 1, "tool": "read", "call_id": "c1",
+ "args": {"path": "main.go"}, "summary": "read main.go"}
+```
+
+Standard SDKs ignore unknown keys inside `delta`, so this is safe to leave on
+with a client that has never heard of it — verified against `openai-python`.
 
 Configuration layers lowest to highest: built-in defaults, JSON config file
 (`-config`), `HARNESS_*` environment variables, then explicitly-passed flags.
@@ -157,8 +213,8 @@ gofmt -l ./internal ./cmd
 | 3 | Workspace, path jail, fs-observation ledger, `read` + `glob` | done |
 | 4 | The agent loop, `grep` / `write` / `edit` | done |
 | 5 | `bash` and the `Shell` interface | done |
-| 6 | Session binding, agent streaming, `/v1/sessions` | next |
-| 7 | Monotonic tool guards, budgets | |
+| 6 | Session binding, agent streaming, `/v1/sessions` | done |
+| 7 | Monotonic tool guards, budgets | next |
 | 8 | Provider quirk profiles and autodetect | |
 | 9 | Context compaction and token estimation | |
 | 10 | Eval harness with programmatic checkers | |

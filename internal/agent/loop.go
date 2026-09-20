@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -68,6 +69,12 @@ type Result struct {
 // second request interleaving with this one would produce failures that are
 // impossible to reconstruct from a transcript.
 func (l *Loop) Run(ctx context.Context, s *workspace.Session, req *oai.ChatCompletionRequest) (*Result, error) {
+	return l.RunWithEvents(ctx, s, req, nil)
+}
+
+// RunWithEvents drives the loop, reporting progress as it goes. A nil emit
+// behaves exactly like Run.
+func (l *Loop) RunWithEvents(ctx context.Context, s *workspace.Session, req *oai.ChatCompletionRequest, emit Emit) (*Result, error) {
 	budget := BudgetFrom(l.cfg)
 	if req.Harness != nil {
 		budget = budget.WithRequestOverride(req.Harness.MaxIterations)
@@ -103,11 +110,13 @@ func (l *Loop) Run(ctx context.Context, s *workspace.Session, req *oai.ChatCompl
 
 	for {
 		if stop := tracker.BeginIteration(); stop.Terminal() {
-			return l.finish(result, tracker, stop), nil
+			return l.done(result, tracker, stop, emit), nil
 		}
 		if ctx.Err() != nil {
-			return l.finish(result, tracker, StopCancelled), nil
+			return l.done(result, tracker, StopCancelled, emit), nil
 		}
+
+		emit.emit(Event{Type: EventTurnStart, Turn: result.Turns + 1})
 
 		// The turn index stamps filesystem observations, so compaction can later
 		// identify which ones it invalidated.
@@ -117,7 +126,7 @@ func (l *Loop) Run(ctx context.Context, s *workspace.Session, req *oai.ChatCompl
 		resp, err := l.upstream.Complete(ctx, turn)
 		if err != nil {
 			if ctx.Err() != nil {
-				return l.finish(result, tracker, StopCancelled), nil
+				return l.done(result, tracker, StopCancelled, emit), nil
 			}
 			return nil, err
 		}
@@ -135,13 +144,13 @@ func (l *Loop) Run(ctx context.Context, s *workspace.Session, req *oai.ChatCompl
 
 		if len(assistant.ToolCalls) == 0 {
 			result.Final = assistant
-			return l.finish(result, tracker, StopComplete), nil
+			return l.done(result, tracker, StopComplete, emit), nil
 		}
 
 		l.log.Debug("tool calls requested",
 			"session_id", s.ID(), "turn", result.Turns, "count", len(assistant.ToolCalls))
 
-		results := l.runToolCalls(ctx, s, registry, assistant.ToolCalls)
+		results := l.runToolCalls(ctx, s, registry, assistant.ToolCalls, result.Turns, emit)
 		for _, r := range results {
 			msg := r.ToMessage()
 			history = append(history, msg)
@@ -149,9 +158,19 @@ func (l *Loop) Run(ctx context.Context, s *workspace.Session, req *oai.ChatCompl
 		}
 
 		if ctx.Err() != nil {
-			return l.finish(result, tracker, StopCancelled), nil
+			return l.done(result, tracker, StopCancelled, emit), nil
 		}
 	}
+}
+
+// done completes the Result and emits the closing event.
+func (l *Loop) done(r *Result, t *Tracker, stop StopReason, emit Emit) *Result {
+	out := l.finish(r, t, stop)
+	emit.emit(Event{
+		Type: EventDone, Turn: out.Turns, Stop: out.Stop,
+		TotalTokens: out.Usage.TotalTokens,
+	})
+	return out
 }
 
 // buildTurn assembles one upstream request from the running history.
@@ -202,13 +221,13 @@ func (l *Loop) finish(r *Result, t *Tracker, stop StopReason) *Result {
 // around it observe a consistent filesystem. Treating "unsure" as exclusive
 // means a new tool is safe by default, and the cost of being wrong in that
 // direction is latency rather than corruption.
-func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry *tools.Registry, calls []oai.ToolCall) []tools.Result {
+func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry *tools.Registry, calls []oai.ToolCall, turn int, emit Emit) []tools.Result {
 	results := make([]tools.Result, len(calls))
 	limit := max(l.cfg.MaxParallelTools, 1)
 
 	for i := 0; i < len(calls); {
 		if !l.concurrencySafe(registry, calls[i]) {
-			results[i] = l.invoke(ctx, s, registry, calls[i])
+			results[i] = l.invoke(ctx, s, registry, calls[i], turn, emit)
 			i++
 			continue
 		}
@@ -220,7 +239,7 @@ func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry 
 		}
 
 		if end-i == 1 {
-			results[i] = l.invoke(ctx, s, registry, calls[i])
+			results[i] = l.invoke(ctx, s, registry, calls[i], turn, emit)
 			i = end
 			continue
 		}
@@ -230,7 +249,7 @@ func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry 
 			wg.Add(1)
 			go func(k int) {
 				defer wg.Done()
-				results[k] = l.invoke(ctx, s, registry, calls[k])
+				results[k] = l.invoke(ctx, s, registry, calls[k], turn, emit)
 			}(k)
 		}
 		wg.Wait()
@@ -251,9 +270,24 @@ func (l *Loop) concurrencySafe(registry *tools.Registry, call oai.ToolCall) bool
 	return t.ConcurrencySafe([]byte(call.Function.Arguments))
 }
 
-func (l *Loop) invoke(ctx context.Context, s *workspace.Session, registry *tools.Registry, call oai.ToolCall) tools.Result {
+func (l *Loop) invoke(ctx context.Context, s *workspace.Session, registry *tools.Registry, call oai.ToolCall, turn int, emit Emit) tools.Result {
+	args := json.RawMessage(call.Function.Arguments)
+	emit.emit(Event{
+		Type: EventToolStart, Turn: turn,
+		Tool: call.Function.Name, CallID: call.ID, Args: args,
+		Summary: summariseCall(call.Function.Name, args),
+	})
+
 	start := time.Now()
 	res := registry.Invoke(ctx, s, call)
+	elapsed := time.Since(start)
+
+	emit.emit(Event{
+		Type: EventToolEnd, Turn: turn,
+		Tool: call.Function.Name, CallID: call.ID,
+		IsError: res.IsError, Code: res.Code,
+		DurationMS: elapsed.Milliseconds(),
+	})
 
 	level := slog.LevelDebug
 	if res.IsError {
@@ -268,7 +302,7 @@ func (l *Loop) invoke(ctx context.Context, s *workspace.Session, registry *tools
 		"call_id", call.ID,
 		"error", res.IsError,
 		"code", res.Code,
-		"duration_ms", time.Since(start).Milliseconds())
+		"duration_ms", elapsed.Milliseconds())
 
 	return res
 }

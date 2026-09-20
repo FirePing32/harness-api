@@ -161,23 +161,6 @@ func TestChatCompletionsRejectsToolMessageWithoutID(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsRejectsStreamingForNow(t *testing.T) {
-	// Saying so plainly beats hanging, or silently returning a non-streamed body
-	// that a streaming client will fail to parse.
-	front := newTestServer(t, okProvider, nil)
-
-	resp := postJSON(t, front.URL+"/v1/chat/completions",
-		`{"model":"m","messages":[{"role":"user","content":"hi"}],"stream":true}`, nil)
-
-	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", resp.StatusCode)
-	}
-	env := decodeError(t, resp)
-	if env.Error.Param != "stream" {
-		t.Errorf("param = %q, want \"stream\"", env.Error.Param)
-	}
-}
-
 func TestChatCompletionsRejectsMalformedJSON(t *testing.T) {
 	front := newTestServer(t, okProvider, nil)
 

@@ -86,6 +86,10 @@ func (s *Server) routes() {
 	v1 := http.NewServeMux()
 	v1.HandleFunc("POST /v1/chat/completions", s.handleChatCompletions)
 	v1.HandleFunc("GET /v1/models", s.handleModels)
+	v1.HandleFunc("POST /v1/sessions", s.handleCreateSession)
+	v1.HandleFunc("GET /v1/sessions", s.handleListSessions)
+	v1.HandleFunc("GET /v1/sessions/{id}", s.handleGetSession)
+	v1.HandleFunc("DELETE /v1/sessions/{id}", s.handleDeleteSession)
 
 	s.mux.Handle("/v1/", chain(v1, s.withAuth, s.withBodyLimit))
 }

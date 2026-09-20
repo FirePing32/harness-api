@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
@@ -156,6 +157,24 @@ func (m *Manager) Len() int {
 	defer m.mu.Unlock()
 	return len(m.sessions)
 }
+
+// List returns every live session, most recently used first.
+func (m *Manager) List() []*Session {
+	m.mu.Lock()
+	out := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		out = append(out, s)
+	}
+	m.mu.Unlock()
+
+	sort.Slice(out, func(a, b int) bool {
+		return out[a].LastUsed().After(out[b].LastUsed())
+	})
+	return out
+}
+
+// IdleTTL is how long a session may sit unused before it is reclaimed.
+func (m *Manager) IdleTTL() time.Duration { return m.idleTTL }
 
 // Remove closes a session and, if it owns its directory, deletes it.
 func (m *Manager) Remove(id string) error {
