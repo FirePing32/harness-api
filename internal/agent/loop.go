@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/contextmgr"
 	"github.com/FirePing32/harness-api/internal/guard"
 	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/tools"
@@ -18,11 +19,12 @@ import (
 
 // Loop turns one client request into as many upstream calls as the task needs.
 type Loop struct {
-	upstream *upstream.Client
-	registry *tools.Registry
-	guards   *guard.Chain
-	cfg      config.Agent
-	log      *slog.Logger
+	upstream  *upstream.Client
+	registry  *tools.Registry
+	guards    *guard.Chain
+	compactor *contextmgr.Compactor
+	cfg       config.Agent
+	log       *slog.Logger
 
 	// dialect is how much JSON Schema the configured provider tolerates.
 	dialect tools.SchemaDialect
@@ -30,12 +32,13 @@ type Loop struct {
 
 // Options configures a Loop.
 type Options struct {
-	Upstream *upstream.Client
-	Registry *tools.Registry
-	Guards   *guard.Chain
-	Config   config.Agent
-	Log      *slog.Logger
-	Dialect  tools.SchemaDialect
+	Upstream  *upstream.Client
+	Registry  *tools.Registry
+	Guards    *guard.Chain
+	Compactor *contextmgr.Compactor
+	Config    config.Agent
+	Log       *slog.Logger
+	Dialect   tools.SchemaDialect
 }
 
 // New builds a Loop.
@@ -45,12 +48,13 @@ func New(opts Options) *Loop {
 		dialect = tools.DialectFull
 	}
 	return &Loop{
-		upstream: opts.Upstream,
-		registry: opts.Registry,
-		guards:   opts.Guards,
-		cfg:      opts.Config,
-		log:      opts.Log,
-		dialect:  dialect,
+		upstream:  opts.Upstream,
+		registry:  opts.Registry,
+		guards:    opts.Guards,
+		compactor: opts.Compactor,
+		cfg:       opts.Config,
+		log:       opts.Log,
+		dialect:   dialect,
 	}
 }
 
@@ -117,6 +121,12 @@ func (l *Loop) RunWithEvents(ctx context.Context, s *workspace.Session, req *oai
 	// catching are only visible as a pattern across several.
 	var priorCalls []guard.Call
 
+	// Monotonic, and deliberately not len(history). Compaction shortens the
+	// history, so a length-derived turn number would go backwards and the
+	// ledger's "invalidate everything observed before now" would silently
+	// invalidate the wrong set.
+	turnCounter := 0
+
 	for {
 		if stop := tracker.BeginIteration(); stop.Terminal() {
 			return l.done(result, tracker, stop, emit), nil
@@ -127,12 +137,14 @@ func (l *Loop) RunWithEvents(ctx context.Context, s *workspace.Session, req *oai
 
 		emit.emit(Event{Type: EventTurnStart, Turn: result.Turns + 1})
 
+		turnCounter++
 		// The turn index stamps filesystem observations, so compaction can later
 		// identify which ones it invalidated.
-		s.SetTurn(len(history))
+		s.SetTurn(turnCounter)
 
-		turn := l.buildTurn(req, history, definitions)
-		resp, err := l.upstream.Complete(ctx, turn)
+		history = l.compact(ctx, s, history, definitions, turnCounter, false)
+
+		resp, err := l.completeWithOverflowRecovery(ctx, s, req, &history, definitions, turnCounter)
 		if err != nil {
 			if ctx.Err() != nil {
 				return l.done(result, tracker, StopCancelled, emit), nil
@@ -140,6 +152,7 @@ func (l *Loop) RunWithEvents(ctx context.Context, s *workspace.Session, req *oai
 			return nil, err
 		}
 		tracker.AddUsage(resp.Usage)
+		l.observeUsage(history, definitions, resp)
 
 		if len(resp.Choices) == 0 {
 			return nil, fmt.Errorf("upstream returned no choices")
@@ -187,6 +200,111 @@ func (l *Loop) done(r *Result, t *Tracker, stop StopReason, emit Emit) *Result {
 		TotalTokens: out.Usage.TotalTokens,
 	})
 	return out
+}
+
+// completeWithOverflowRecovery sends a turn, and if the provider says the
+// conversation was too long, compacts harder and sends it once more.
+//
+// The estimate is an approximation over an unknown tokenizer, so it will be
+// wrong sometimes. When it is, the provider tells us — and an overflow is the
+// one error where the right response is obvious and mechanical. Returning it
+// to the caller would hand them a failure they can do nothing about, in the
+// middle of a task that was going fine.
+func (l *Loop) completeWithOverflowRecovery(
+	ctx context.Context, s *workspace.Session, req *oai.ChatCompletionRequest,
+	history *[]oai.Message, defs []oai.Tool, turn int,
+) (*oai.ChatCompletionResponse, error) {
+	resp, err := l.upstream.Complete(ctx, l.buildTurn(req, *history, defs))
+	if err == nil || !contextmgr.IsOverflow(err) || l.compactor == nil {
+		return resp, err
+	}
+
+	l.log.Warn("provider reported a context overflow; compacting and retrying",
+		"session_id", s.ID(), "turn", turn)
+
+	compacted := l.compact(ctx, s, *history, defs, turn, true)
+	if len(compacted) == len(*history) {
+		// Nothing could be freed, so retrying would fail identically.
+		return nil, err
+	}
+	*history = compacted
+
+	return l.upstream.Complete(ctx, l.buildTurn(req, compacted, defs))
+}
+
+// compact keeps the conversation inside the window and invalidates whatever
+// filesystem observations it just invalidated the evidence for.
+//
+// That second part is the whole reason the ledger records a turn number. When
+// a file's contents leave the conversation, the model no longer holds them,
+// but the observation survives — and the read-before-edit check goes on
+// vouching for bytes nobody can see. The invariant degrades into a rubber
+// stamp, silently, and the failure it was built to prevent comes back.
+func (l *Loop) compact(
+	ctx context.Context, s *workspace.Session,
+	history []oai.Message, defs []oai.Tool, turn int, force bool,
+) []oai.Message {
+	if l.compactor == nil {
+		return history
+	}
+
+	var (
+		res *contextmgr.Result
+		err error
+	)
+	if force {
+		res, err = l.compactor.Force(ctx, history, defs, 0)
+	} else {
+		res, err = l.compactor.Maybe(ctx, history, defs)
+	}
+	if err != nil || !res.Compacted() {
+		if err != nil {
+			l.log.Warn("compaction failed; continuing uncompacted",
+				"session_id", s.ID(), "error", err)
+		}
+		return history
+	}
+
+	switch {
+	case res.DroppedAll:
+		// A summary replaced messages wholesale, so anything observed before
+		// this turn is suspect. Conservative on purpose: the cost of being
+		// wrong this way is one re-read, and the cost of the other way is an
+		// edit applied to contents the model was only guessing at.
+		n := s.Ledger().MarkStaleBefore(turn)
+		l.log.Info("context compacted",
+			"session_id", s.ID(), "method", res.Method,
+			"before_tokens", res.BeforeTokens, "after_tokens", res.AfterTokens,
+			"observations_invalidated", n)
+	default:
+		n := s.Ledger().MarkStale(res.PrunedPaths...)
+		l.log.Info("context compacted",
+			"session_id", s.ID(), "method", res.Method,
+			"before_tokens", res.BeforeTokens, "after_tokens", res.AfterTokens,
+			"observations_invalidated", n)
+	}
+	return res.Messages
+}
+
+// observeUsage feeds a real prompt-token count back into the estimator, which
+// is how a byte ratio converges on whatever tokenizer this provider uses.
+func (l *Loop) observeUsage(
+	history []oai.Message, defs []oai.Tool, resp *oai.ChatCompletionResponse,
+) {
+	if l.compactor == nil || resp.Usage == nil || resp.Usage.PromptTokens == 0 {
+		return
+	}
+	l.compactor.Estimator().Observe(
+		contextmgr.Bytes(history)+toolBytes(defs), resp.Usage.PromptTokens)
+}
+
+func toolBytes(tools []oai.Tool) int {
+	total := 0
+	for _, t := range tools {
+		total += len(t.Function.Name) + len(t.Function.Description) +
+			len(t.Function.Parameters) + 16
+	}
+	return total
 }
 
 // buildTurn assembles one upstream request from the running history.

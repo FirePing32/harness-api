@@ -87,6 +87,18 @@ requires a non-interactive shell without job control to set SIGINT to *ignored*
 in background children, so `something &` inside `bash -c` cannot be interrupted
 by SIGINT at all — bash dies and the child keeps running.
 
+### Context compaction
+
+A conversation approaching the model's window is compacted rather than allowed
+to overflow. This has one security-adjacent consequence worth stating: when a
+file's contents are dropped from the conversation, its read-before-edit
+observation is invalidated, so a later edit is refused rather than applied
+against contents the model no longer has.
+
+That invariant degrading silently was the specific failure this guards against.
+The ledger would go on vouching for bytes nobody could see, the check would
+pass, and an edit would be written from the model's recollection.
+
 ### Tool guards
 
 Every tool call is inspected before it runs. Guards can only **deny**, never

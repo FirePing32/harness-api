@@ -7,6 +7,7 @@ import (
 
 	"github.com/FirePing32/harness-api/internal/agent"
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/contextmgr"
 	"github.com/FirePing32/harness-api/internal/guard"
 	"github.com/FirePing32/harness-api/internal/tools"
 	"github.com/FirePing32/harness-api/internal/upstream"
@@ -105,18 +106,47 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		"schema_dialect", profile.SchemaDialect)
 
 	client := upstream.NewWithProfile(cfg.Upstream, profile, log)
+
+	var compactor *contextmgr.Compactor
+	if cfg.Context.Enabled {
+		window := cfg.Context.Window
+		if window == 0 {
+			window = profile.ContextWindow
+		}
+		if window == 0 {
+			// No window is knowable, so compaction is off rather than guessing.
+			// A wrong guess either wastes a summarisation call on every request
+			// or fails to prevent the overflow it exists for.
+			log.Warn("context compaction disabled: no context window is known for " +
+				"this profile; set context.window to enable it")
+		} else {
+			compactor = contextmgr.New(contextmgr.Options{
+				Summarizer: client,
+				Log:        log,
+				Window:     window,
+				Threshold:  cfg.Context.Threshold,
+				Retain:     cfg.Context.Retain,
+			})
+			log.Info("context compaction enabled",
+				"window", window,
+				"threshold", cfg.Context.Threshold,
+				"retain", cfg.Context.Retain)
+		}
+	}
+
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
 		upstream: client,
 		sessions: sessions,
 		agent: agent.New(agent.Options{
-			Upstream: client,
-			Registry: DefaultTools(cfg),
-			Guards:   guards,
-			Config:   cfg.Agent,
-			Log:      log,
-			Dialect:  tools.SchemaDialect(profile.SchemaDialect),
+			Upstream:  client,
+			Registry:  DefaultTools(cfg),
+			Guards:    guards,
+			Compactor: compactor,
+			Config:    cfg.Agent,
+			Log:       log,
+			Dialect:   tools.SchemaDialect(profile.SchemaDialect),
 		}),
 		mux: http.NewServeMux(),
 	}

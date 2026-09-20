@@ -4,11 +4,12 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: usable, incomplete.** Phases 0–8 of 11 are done. The agent loop
-> works end to end with the full core tool set — `read`, `glob`, `grep`,
-> `edit`, `write`, `bash` — plus streaming, persistent sessions, tool guards
-> and provider quirk profiles. Not yet implemented: context compaction, so a
-> long task can still overflow the model's window. See [Roadmap](#roadmap).
+> **Status: feature-complete, unproven.** Phases 0–9 of 11 are done: the full
+> core tool set (`read`, `glob`, `grep`, `edit`, `write`, `bash`), streaming,
+> persistent sessions, tool guards, provider quirk profiles and context
+> compaction. What is missing is the part that would tell you whether any of
+> it *works* — there is no eval suite yet, so every capability claim here is
+> an argument from design rather than a measurement. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -89,6 +90,21 @@ curl -X DELETE localhost:8080/v1/sessions/ws_abc…
 Deleting an ephemeral session removes its directory; a session bound to a
 directory you nominated gives up the handle and leaves your files alone. The
 response says which happened.
+
+### Long tasks
+
+When a conversation approaches the model's context window, the server compacts
+it: first by dropping the bodies of old tool results, then — only if that is
+not enough — by summarising older turns. The system prompt and your original
+task survive verbatim; the most recent turns are kept untouched.
+
+Files whose contents were dropped have their read-before-edit observation
+invalidated, so a later edit is refused with an instruction to re-read rather
+than applied against contents the model no longer holds.
+
+The context window comes from the provider profile. If the profile does not
+know one, compaction is **disabled** rather than guessing — set
+`context.window` to enable it.
 
 ### Providers
 
@@ -227,6 +243,21 @@ transforms never mutate the caller's request: the loop re-sends the running
 history every turn, so an in-place edit would compound — a system message
 renamed on turn one renamed again on turn two.
 
+**Compaction prunes before it summarises.** A long run overflows the window
+because tool results are large, not because the conversation is long — twenty
+file reads at 40 KB each is most of a context window, and almost none of it is
+still needed. Dropping old tool-result bodies is free and usually enough;
+summarising costs a generation and loses detail. Doing it the other way round
+spends both to solve a problem that deleting stale file contents would have
+solved for nothing.
+
+**Token estimates correct themselves instead of vendoring a tokenizer.**
+OpenAI's tokenizer says nothing useful about Llama or Qwen, and this server
+talks to whatever it is pointed at. Every response carries `usage.prompt_tokens`
+for a request whose byte count is known exactly — a free labelled sample — so a
+byte ratio converges on the real tokenizer within a few turns, for any
+tokenizer, with no dependency.
+
 **Guards can only deny, never permit.** An allow result would make the outcome
 depend on registration order, and every new guard would have to be reasoned
 about against every existing one. Deny-only makes the chain monotonic: adding
@@ -254,8 +285,8 @@ gofmt -l ./internal ./cmd
 | 6 | Session binding, agent streaming, `/v1/sessions` | done |
 | 7 | Monotonic tool guards, budgets | done |
 | 8 | Provider quirk profiles and autodetect | done |
-| 9 | Context compaction and token estimation | next |
-| 10 | Eval harness with programmatic checkers | |
+| 9 | Context compaction and token estimation | done |
+| 10 | Eval harness with programmatic checkers | next |
 | 11 | Hardening, rlimits, audit log, docs | |
 
 ## Dependencies

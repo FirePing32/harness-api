@@ -148,6 +148,29 @@ func (l *Ledger) MarkStaleBefore(turn int) int {
 	return n
 }
 
+// MarkStale invalidates specific paths, for when their contents were dropped
+// from the conversation individually rather than by a wholesale summary.
+//
+// Marked rather than deleted, for the same reason as MarkStaleBefore: the
+// model did read the file, and telling it otherwise invites an argument with
+// the tool instead of a re-read.
+func (l *Ledger) MarkStale(paths ...string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	n := 0
+	for _, path := range paths {
+		obs, ok := l.entries[path]
+		if !ok || obs.Stale {
+			continue
+		}
+		obs.Stale = true
+		l.entries[path] = obs
+		n++
+	}
+	return n
+}
+
 // Authorize reports whether modifying path is permitted, given the file's
 // current content. Pass exists=false with nil content for a path that is not
 // there now.

@@ -57,6 +57,7 @@ type Config struct {
 	Workspace Workspace `json:"workspace"`
 	Shell     Shell     `json:"shell"`
 	Guards    Guards    `json:"guards"`
+	Context   Context   `json:"context"`
 	Log       Log       `json:"log"`
 }
 
@@ -145,6 +146,22 @@ type Shell struct {
 	SpillBytes int `json:"spill_bytes"`
 }
 
+// Context governs keeping a conversation inside the model's window.
+type Context struct {
+	Enabled bool `json:"enabled"`
+
+	// Threshold is the fraction of the window at which compaction runs.
+	Threshold float64 `json:"threshold"`
+
+	// Retain is the fraction kept verbatim as the most recent messages.
+	Retain float64 `json:"retain"`
+
+	// Window overrides the profile's context size, in tokens. Zero uses the
+	// profile's value; if that is also zero, compaction is disabled, because
+	// guessing a window would be worse than doing nothing.
+	Window int `json:"window"`
+}
+
 // Guards configures the checks applied to a tool call before it runs.
 //
 // Guards can only deny, never permit, so turning one on can make the agent
@@ -199,6 +216,11 @@ func Default() Config {
 			MaxTimeout:     Duration(10 * time.Minute),
 			TailBytes:      30 << 10,
 			SpillBytes:     5 << 20,
+		},
+		Context: Context{
+			Enabled:   true,
+			Threshold: 0.8,
+			Retain:    0.16,
 		},
 		Guards: Guards{
 			Enabled:         true,
@@ -376,6 +398,20 @@ func (c *Config) Validate() error {
 
 	if c.Server.MaxBodyBytes <= 0 {
 		errs = append(errs, errors.New("server.max_body_bytes must be > 0"))
+	}
+
+	if c.Context.Enabled {
+		if c.Context.Threshold <= 0 || c.Context.Threshold >= 1 {
+			errs = append(errs, errors.New("context.threshold must be between 0 and 1"))
+		}
+		if c.Context.Retain <= 0 || c.Context.Retain >= 1 {
+			errs = append(errs, errors.New("context.retain must be between 0 and 1"))
+		}
+		if c.Context.Retain >= c.Context.Threshold {
+			errs = append(errs, errors.New(
+				"context.retain must be less than context.threshold, or compaction "+
+					"could not free any space"))
+		}
 	}
 
 	if c.Guards.Enabled && c.Guards.RepeatThreshold < 0 {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/contextmgr"
 	"github.com/FirePing32/harness-api/internal/guard"
 	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/tools"
@@ -32,6 +33,11 @@ type scriptedProvider struct {
 	turns    []oai.Message
 	received []oai.ChatCompletionRequest
 	calls    atomic.Int32
+
+	// proportionalUsage reports prompt tokens derived from the request size,
+	// as a real provider does. Off by default so tests can assert on exact
+	// token totals.
+	proportionalUsage bool
 }
 
 func (p *scriptedProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,10 +63,17 @@ func (p *scriptedProvider) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if len(msg.ToolCalls) > 0 {
 		finish = oai.FinishToolCalls
 	}
+	usage := &oai.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15}
+	if p.proportionalUsage {
+		prompt := len(body) / 4
+		usage = &oai.Usage{
+			PromptTokens: prompt, CompletionTokens: 5, TotalTokens: prompt + 5,
+		}
+	}
 	resp := oai.ChatCompletionResponse{
 		ID: "chatcmpl-test", Object: "chat.completion", Model: "test-model",
 		Choices: []oai.Choice{{Index: 0, Message: msg, FinishReason: &finish}},
-		Usage:   &oai.Usage{PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15},
+		Usage:   usage,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -754,5 +767,152 @@ func TestLoopRepeatGuardBreaksAnIdenticalCallLoop(t *testing.T) {
 	}
 	if denials == 0 {
 		t.Error("the repeat guard never fired on an identical-call loop")
+	}
+}
+
+// fixedSummarizer stands in for the summarisation call.
+//
+// Deliberately separate from the scripted provider: compaction makes its own
+// upstream call, and sharing the script would let summarisation consume the
+// assistant turns the test is trying to drive.
+type fixedSummarizer struct{ calls atomic.Int32 }
+
+func (f *fixedSummarizer) Complete(
+	context.Context, *oai.ChatCompletionRequest,
+) (*oai.ChatCompletionResponse, error) {
+	f.calls.Add(1)
+	return &oai.ChatCompletionResponse{Choices: []oai.Choice{{
+		Message: oai.Message{
+			Role:    oai.RoleAssistant,
+			Content: oai.TextContent("- read big.go\n- still to do: edit it"),
+		},
+	}}}, nil
+}
+
+// withCompaction installs a compactor with a deliberately tiny window, so
+// compaction fires on a short conversation.
+func (h *harness) withCompaction(window int) *harness {
+	h.loop.compactor = contextmgr.New(contextmgr.Options{
+		Summarizer: &fixedSummarizer{},
+		Log:        slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Window:     window,
+	})
+	return h
+}
+
+func TestLoopCompactionInvalidatesObservationsItDroppedEvidenceFor(t *testing.T) {
+	// The interaction the ledger's turn stamp exists for. Once a file's
+	// contents leave the conversation, the model no longer holds them — but
+	// the observation survives, and the read-before-edit check goes on
+	// vouching for bytes nobody can see. The invariant degrades into a rubber
+	// stamp, silently, and the failure it was built to prevent comes back.
+	big := strings.Repeat("package main // filler\n", 900)
+
+	// Several turns between the read and the edit, so the read's result is old
+	// enough to fall outside the retained window by the time the edit is tried.
+	h := newHarness(t, map[string]string{"big.go": big}, []oai.Message{
+		assistantTools(toolCall("c1", "read", map[string]any{"path": "big.go"})),
+		assistantTools(toolCall("c2", "glob", map[string]any{"pattern": "**/*"})),
+		assistantTools(toolCall("c3", "glob", map[string]any{"pattern": "*.go"})),
+		assistantTools(toolCall("c4", "edit", map[string]any{
+			"path": "big.go", "old_string": "package main // filler\npackage main // filler",
+			"new_string": "package x",
+		})),
+		assistantText("done"),
+	}).withCompaction(3000)
+
+	h.run(t, "read the file then edit it")
+
+	// The read happened, so there is an observation...
+	obs, ok := h.session.Ledger().Lookup("big.go")
+	if !ok {
+		t.Fatal("no observation was recorded for the file that was read")
+	}
+	// ...but its evidence was compacted away, so it must no longer vouch.
+	if !obs.Stale {
+		t.Error("the observation survived compaction unmarked; the read-before-edit " +
+			"check is now vouching for contents that are no longer in context")
+	}
+
+	// And the edit that followed must have been refused on those grounds.
+	sent := h.provider.lastRequest(t)
+	var refused bool
+	for _, m := range sent.Messages {
+		if m.Role == oai.RoleTool && strings.Contains(m.Content.String(), "summarised away") {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Error("the edit was allowed against contents the model no longer had")
+	}
+}
+
+func TestLoopCompactionKeepsTheTaskAndLetsWorkContinue(t *testing.T) {
+	// A forced compaction must not break the run: the task statement survives,
+	// and the model goes on to finish.
+	big := strings.Repeat("filler line\n", 900)
+	_ = big
+
+	h := newHarness(t, map[string]string{"a.go": big, "b.go": "small\n"}, []oai.Message{
+		assistantTools(toolCall("c1", "read", map[string]any{"path": "a.go"})),
+		assistantTools(toolCall("c2", "read", map[string]any{"path": "b.go"})),
+		assistantText("Finished: a.go is filler, b.go is small."),
+	}).withCompaction(3000)
+
+	res := h.run(t, "summarise both files")
+
+	if res.Stop != StopComplete {
+		t.Fatalf("Stop = %q, want the run to complete through compaction", res.Stop)
+	}
+	if !strings.Contains(res.Final.Content.String(), "Finished") {
+		t.Errorf("final answer = %q", res.Final.Content.String())
+	}
+
+	// The task statement is the one thing that must survive intact.
+	sent := h.provider.lastRequest(t)
+	var sawTask bool
+	for _, m := range sent.Messages {
+		if strings.Contains(m.Content.String(), "summarise both files") {
+			sawTask = true
+		}
+	}
+	if !sawTask {
+		t.Error("the user's task was compacted away")
+	}
+}
+
+func TestLoopFeedsRealUsageBackIntoTheEstimator(t *testing.T) {
+	// Without this the byte ratio never corrects, and the whole point of not
+	// vendoring a tokenizer is lost.
+	h := newHarness(t, map[string]string{"a.go": "x\n"}, []oai.Message{
+		assistantTools(toolCall("c1", "read", map[string]any{"path": "a.go"})),
+		assistantText("done"),
+	}).withCompaction(100_000)
+	// Usage proportional to the request, as a real provider reports. The
+	// fixed 15-token usage the other tests rely on is implausible for a
+	// multi-kilobyte prompt, and the estimator correctly discards it.
+	h.provider.proportionalUsage = true
+
+	h.run(t, "read it")
+
+	if got := h.loop.compactor.Estimator().Samples(); got == 0 {
+		t.Error("no usage reports reached the estimator")
+	}
+}
+
+func TestLoopWithoutACompactorIsUnaffected(t *testing.T) {
+	// Compaction is optional: an unknown context window disables it rather
+	// than guessing, and the loop has to work exactly as before.
+	h := newHarness(t, map[string]string{"a.go": "x\n"}, []oai.Message{
+		assistantTools(toolCall("c1", "read", map[string]any{"path": "a.go"})),
+		assistantText("done"),
+	})
+	if h.loop.compactor != nil {
+		t.Fatal("this harness should have no compactor")
+	}
+
+	res := h.run(t, "read it")
+	if res.Stop != StopComplete {
+		t.Errorf("Stop = %q", res.Stop)
 	}
 }
