@@ -4,16 +4,18 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: complete, and still unmeasured.** All eleven phases are done: the
-> core tool set (`read`, `glob`, `grep`, `edit`, `write`, `bash`), streaming,
-> persistent sessions, tool guards, provider quirk profiles, context
-> compaction, resource ceilings, an audit log, and an eval harness with
-> eighteen programmatically checked tasks. Everything is verified end to end
-> against a scripted model and under `-race` on Linux and macOS. **No numbers
-> against a real model are published here**, so the capability claims below are
-> still arguments from design rather than measurements — the suite exists to
-> settle them, and nobody has run it in anger yet. See
-> [Evaluation](#evaluation).
+> **Status: built, and now in first contact with a real model.** All eleven
+> phases are done: the core tool set (`read`, `glob`, `grep`, `edit`, `write`,
+> `bash`), streaming, persistent sessions, tool guards, provider quirk
+> profiles, context compaction, resource ceilings, an audit log, and an eval
+> harness with eighteen programmatically checked tasks. It runs end to end
+> against a live provider, and under `-race` on Linux and macOS.
+>
+> **There are still no suite numbers here.** Individual runs work; the full
+> suite has not been run to completion, so every capability claim below remains
+> an argument from design. What the first real runs did produce is
+> [two corrections to this design](#what-first-contact-changed), which is the
+> more useful early return.
 
 ## Why
 
@@ -238,6 +240,49 @@ and `./evals/verify-checkers.sh` asserts that each one accepts a real solution
 and rejects the specific near-miss it exists to catch. See
 [docs/evals.md](docs/evals.md).
 
+## What first contact changed
+
+Nine phases of design reasoning, then an hour against a real model. Two of the
+conclusions did not survive, and both were found by watching turn-level
+progress events rather than by anything the test suite could check.
+
+**A rule was enforced but never stated.** The system prompt said "read a file
+before *editing* it". The observation ledger also required it before
+*creating*, and nothing told the model that — so creating one file took four
+turns: `write` refused, `read` the missing path, `write` again, answer. Ten
+thousand tokens for one line of text. The model behaved well throughout; it
+read the error, understood the refusal, and recovered. The defect was upstream
+of it.
+
+**The fix for that did not work.** Stating the rule in the prompt changed
+nothing — the model still went straight to `write`, identical first call,
+measured twice. The commit is kept in history rather than squashed, because a
+failed fix with its measurement attached is worth more to the next reader than
+a tidy story.
+
+**So the rule itself was wrong.** Looking at why it existed: it was meant to
+stop a create from clobbering a concurrent creator. It never did. `write`
+stats the path under the session lock immediately before authorising, so "not
+there" holds at the moment of the write and creating it destroys nothing.
+Requiring an earlier read actually *widened* the race it was meant to close —
+one turn apart rather than microseconds. It cost a turn on every file creation
+and protected against nothing, and it is gone. Everything that can actually
+lose bytes is still refused.
+
+**Honest accounting on the result:** removing the refusal did not make runs
+shorter. Turn count stayed at four, because the model spent the freed turn on a
+redundant second read. A guaranteed-wasted turn was eliminated; no efficiency
+gain has been demonstrated. Saying otherwise would be exactly the kind of claim
+this suite exists to stop.
+
+A separate pass found a 402 "insufficient balance" from a provider being
+relayed to clients as a 400 "invalid request" — telling the caller to fix a
+request that was fine. And it found this README promising that upstream error
+bodies are "never echoed to clients", when in fact 4xx bodies *are* relayed
+after credential scrubbing. Overstating a security guarantee is worse than
+understating one: it invites the reader to stop checking whether the scrubbing
+is adequate, and the scrubbing is the entire control.
+
 ## Design notes
 
 A few decisions that are load-bearing, and why:
@@ -348,6 +393,7 @@ both platform behaviour a single-OS matrix would have shipped.
 | 9 | Context compaction and token estimation | done |
 | 10 | Eval harness with programmatic checkers | done |
 | 11 | Resource ceilings, audit log, CI, suite expansion | done |
+| — | First real-model runs; suite pass not yet completed | in progress |
 
 ## Dependencies
 
