@@ -231,8 +231,18 @@ func NewStream(rc io.ReadCloser, format Format) *Stream {
 }
 
 // Stream starts a streaming chat completion. The caller must Close the result.
+//
+// An empty format defers to the provider profile, which defers in turn to
+// sniffing the first line. A profile that names a framing is trusted over the
+// sniffer, since a provider whose first line happens to look like the other
+// format would otherwise be misread.
 func (c *Client) Stream(ctx context.Context, req *oai.ChatCompletionRequest, format Format) (*Stream, error) {
-	body, err := BuildBody(req, true)
+	profile := c.Profile(req.Model)
+	if format == FormatAuto && profile.StreamFormat != "" {
+		format = Format(profile.StreamFormat)
+	}
+
+	body, err := BuildBody(Apply(profile, req), true)
 	if err != nil {
 		return nil, fmt.Errorf("encode upstream request: %w", err)
 	}

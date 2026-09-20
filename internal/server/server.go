@@ -94,7 +94,17 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		log.Info("tool guards active", "guards", guards.Names())
 	}
 
-	client := upstream.New(cfg.Upstream, log)
+	profile, err := cfg.ResolveProfile()
+	if err != nil {
+		return nil, err
+	}
+	log.Info("provider profile",
+		"profile", profile.Name,
+		"max_tokens_field", profile.MaxTokensField,
+		"system_role", profile.SystemRole,
+		"schema_dialect", profile.SchemaDialect)
+
+	client := upstream.NewWithProfile(cfg.Upstream, profile, log)
 	s := &Server{
 		cfg:      cfg,
 		log:      log,
@@ -106,6 +116,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 			Guards:   guards,
 			Config:   cfg.Agent,
 			Log:      log,
+			Dialect:  tools.SchemaDialect(profile.SchemaDialect),
 		}),
 		mux: http.NewServeMux(),
 	}

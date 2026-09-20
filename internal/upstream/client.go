@@ -17,6 +17,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/FirePing32/harness-api/internal/config"
@@ -36,10 +37,34 @@ type Client struct {
 	maxRetries int
 	http       *http.Client
 	log        *slog.Logger
+
+	// profile is the configured starting point. It is never mutated; learned
+	// adjustments live in learned, keyed by model.
+	profile config.Profile
+
+	mu      sync.Mutex
+	learned map[string]config.Profile
+	applied map[string][]Fix
 }
 
-// New builds a Client from upstream configuration.
+// New builds a Client from upstream configuration. The profile is resolved by
+// the caller so that a bad name fails at startup rather than on first use.
 func New(cfg config.Upstream, log *slog.Logger) *Client {
+	return NewWithProfile(cfg, config.Profile{
+		Name: "generic", MaxTokensField: "max_tokens",
+		SystemRole: "system", ToolCallContent: config.StyleNull,
+		Sampling: true, SchemaDialect: config.DialectBasic, MaxStopSequences: 4,
+	}, log)
+}
+
+// NewWithProfile builds a Client using a resolved provider profile.
+func NewWithProfile(cfg config.Upstream, profile config.Profile, log *slog.Logger) *Client {
+	c := clientFrom(cfg, log)
+	c.profile = profile
+	return c
+}
+
+func clientFrom(cfg config.Upstream, log *slog.Logger) *Client {
 	return &Client{
 		baseURL:    cfg.BaseURL,
 		apiKey:     cfg.APIKey,
@@ -53,8 +78,76 @@ func New(cfg config.Upstream, log *slog.Logger) *Client {
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
-		log: log,
+		log:     log,
+		learned: make(map[string]config.Profile),
+		applied: make(map[string][]Fix),
 	}
+}
+
+// Profile returns the profile in force for a model, including anything learned
+// from the provider's own rejections.
+func (c *Client) Profile(model string) config.Profile {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if p, ok := c.learned[model]; ok {
+		return p
+	}
+	return c.profile
+}
+
+// maxAutoFixes bounds how many adjustments will be inferred for one model.
+//
+// The cap is the point. Without it, a provider rejecting something that cannot
+// be inferred produces an unbounded retry loop that looks like a hang and
+// costs real money on every attempt. Three covers the combinations seen in
+// practice, which are usually a token field and a role name together.
+const maxAutoFixes = 3
+
+// learnFrom inspects a rejection and adopts the adjustment it implies.
+//
+// Returns true when something was learned and the request is worth retrying.
+// Each distinct fix is adopted at most once per model, so a provider that
+// keeps complaining about the same thing does not loop.
+func (c *Client) learnFrom(model string, err error) bool {
+	var upErr *Error
+	if !errors.As(err, &upErr) || upErr.Status != http.StatusBadRequest {
+		return false
+	}
+
+	fix, ok := inferFix(upErr.Body)
+	if !ok {
+		return false
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, already := range c.applied[model] {
+		if already == fix.Name {
+			return false
+		}
+	}
+	if len(c.applied[model]) >= maxAutoFixes {
+		return false
+	}
+
+	base, ok := c.learned[model]
+	if !ok {
+		base = c.profile
+	}
+	fix.Apply(&base)
+	base.Name = c.profile.Name + "+auto"
+	c.learned[model] = base
+	c.applied[model] = append(c.applied[model], fix.Name)
+
+	// Warn rather than debug, and name the fix: the operator should pin this
+	// in configuration rather than pay a failed request for it forever.
+	c.log.Warn("provider rejected a request; adjusting and retrying",
+		"model", model,
+		"fix", string(fix.Name),
+		"pin_with", "upstream.profile_overrides",
+		"provider_said", logx.Redact(truncate(upErr.Body, 200)))
+	return true
 }
 
 // DefaultModel is the configured fallback model, used when a request does not
@@ -65,8 +158,25 @@ func (c *Client) DefaultModel() string { return c.model }
 func (c *Client) BaseURL() string { return c.baseURL }
 
 // Complete performs a non-streaming chat completion.
+//
+// A 400 that names a parameter this provider does not accept is treated as
+// information rather than a failure: the profile is adjusted and the request
+// is sent again. Capped, so a rejection nothing can be inferred from fails
+// once rather than looping.
 func (c *Client) Complete(ctx context.Context, req *oai.ChatCompletionRequest) (*oai.ChatCompletionResponse, error) {
-	body, err := BuildBody(req, false)
+	for {
+		out, err := c.completeOnce(ctx, req)
+		if err != nil && c.learnFrom(req.Model, err) {
+			continue
+		}
+		return out, err
+	}
+}
+
+func (c *Client) completeOnce(ctx context.Context, req *oai.ChatCompletionRequest) (*oai.ChatCompletionResponse, error) {
+	profile := c.Profile(req.Model)
+
+	body, err := BuildBody(Apply(profile, req), false)
 	if err != nil {
 		return nil, fmt.Errorf("encode upstream request: %w", err)
 	}
@@ -89,6 +199,8 @@ func (c *Client) Complete(ctx context.Context, req *oai.ChatCompletionRequest) (
 		return nil, fmt.Errorf("upstream returned a non-JSON success body (%d bytes): %w",
 			len(raw), err)
 	}
+
+	StripThink(profile, &out)
 	return &out, nil
 }
 

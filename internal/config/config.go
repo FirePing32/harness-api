@@ -87,9 +87,13 @@ type Upstream struct {
 	// this is a default rather than a hard binding.
 	Model string `json:"model"`
 
-	// Profile names the quirk profile (see internal/config/profiles.go). Empty
-	// means "generic", the maximally conservative setting.
+	// Profile names the quirk profile (see profiles.go). Empty means
+	// "generic", the maximally conservative setting.
 	Profile string `json:"profile"`
+
+	// ProfileOverrides is a partial profile merged over the named one, so a
+	// provider with no built-in profile needs configuration rather than code.
+	ProfileOverrides json.RawMessage `json:"profile_overrides,omitempty"`
 
 	Timeout    Duration `json:"timeout"`
 	MaxRetries int      `json:"max_retries"`
@@ -342,6 +346,12 @@ func (c *Config) Validate() error {
 
 	if c.Upstream.Profile == "" {
 		c.Upstream.Profile = "generic"
+	}
+	// Resolved at startup rather than on the first request, so a bad profile
+	// name or a malformed override is a refusal to boot instead of a runtime
+	// failure on whichever request happens to arrive first.
+	if _, err := c.ResolveProfile(); err != nil {
+		errs = append(errs, err)
 	}
 	if c.Upstream.MaxRetries < 0 {
 		errs = append(errs, errors.New("upstream.max_retries must be >= 0"))

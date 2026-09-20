@@ -4,11 +4,11 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: usable, incomplete.** Phases 0–7 of 11 are done. The agent loop
+> **Status: usable, incomplete.** Phases 0–8 of 11 are done. The agent loop
 > works end to end with the full core tool set — `read`, `glob`, `grep`,
-> `edit`, `write`, `bash` — plus streaming, persistent sessions and tool
-> guards. Not yet implemented: provider quirk profiles and context
-> compaction. See [Roadmap](#roadmap).
+> `edit`, `write`, `bash` — plus streaming, persistent sessions, tool guards
+> and provider quirk profiles. Not yet implemented: context compaction, so a
+> long task can still overflow the model's window. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -89,6 +89,28 @@ curl -X DELETE localhost:8080/v1/sessions/ws_abc…
 Deleting an ephemeral session removes its directory; a session bound to a
 directory you nominated gives up the handle and leaves your files alone. The
 response says which happened.
+
+### Providers
+
+`-upstream-profile` selects the compatibility profile: `openai`,
+`openai-reasoning`, `deepseek`, `deepseek-reasoner`, `groq`, `together`,
+`vllm`, `ollama`, `anthropic-compat`, or `generic` (the default, and the most
+conservative).
+
+If your provider is not listed, override individual fields rather than waiting
+for a profile — `upstream.profile_overrides` is a partial profile merged over
+the named one.
+
+If the profile is still wrong, the server learns from the provider's own 400s,
+retries, and logs what to pin:
+
+```
+level=WARN msg="provider rejected a request; adjusting and retrying"
+  model=picky fix=max_completion_tokens pin_with=upstream.profile_overrides
+```
+
+Capped at three adjustments per model, so a rejection nothing can be inferred
+from fails once rather than looping. See [docs/quirks.md](docs/quirks.md).
 
 ### Streaming
 
@@ -198,6 +220,13 @@ explicitly or lives in the filesystem, which persists anyway.
 **Tool error messages are implementation, not decoration.** They are the model's
 only recovery signal, so each one says what was wrong and what to do next.
 
+**Provider quirks are data, not code.** There are more providers than anyone
+will write structs for, so compatibility is a set of transforms selected by
+configuration, and a provider nobody has heard of is a config change. The
+transforms never mutate the caller's request: the loop re-sends the running
+history every turn, so an in-place edit would compound — a system message
+renamed on turn one renamed again on turn two.
+
 **Guards can only deny, never permit.** An allow result would make the outcome
 depend on registration order, and every new guard would have to be reasoned
 about against every existing one. Deny-only makes the chain monotonic: adding
@@ -224,8 +253,8 @@ gofmt -l ./internal ./cmd
 | 5 | `bash` and the `Shell` interface | done |
 | 6 | Session binding, agent streaming, `/v1/sessions` | done |
 | 7 | Monotonic tool guards, budgets | done |
-| 8 | Provider quirk profiles and autodetect | next |
-| 9 | Context compaction and token estimation | |
+| 8 | Provider quirk profiles and autodetect | done |
+| 9 | Context compaction and token estimation | next |
 | 10 | Eval harness with programmatic checkers | |
 | 11 | Hardening, rlimits, audit log, docs | |
 
