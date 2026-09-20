@@ -140,6 +140,17 @@ func (v View) Render(displayPath string) string {
 	return b.String()
 }
 
+// RenderPlain writes the numbered lines with no footer and no empty-file
+// prose. Used where the view is already inside a message that has explained
+// what it is, such as the snippet an edit returns.
+func (v View) RenderPlain() string {
+	var b strings.Builder
+	for i, line := range v.Lines {
+		fmt.Fprintf(&b, "%6d\t%s\n", v.Offset+i, line)
+	}
+	return b.String()
+}
+
 // footer explains what was withheld and how to reach it. Stating the remaining
 // count and the exact next offset turns "show me the rest" from a guess into a
 // single correct call.

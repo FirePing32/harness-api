@@ -4,11 +4,11 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: incomplete.** Phases 0–3 of 11 are done. What exists is the wire
-> layer, the streaming reader, the workspace and its tools — everything the
-> agent loop will sit between. The loop itself is not implemented yet, so
-> `/v1/chat/completions` currently proxies to the upstream provider and returns
-> what it says. See [Roadmap](#roadmap).
+> **Status: usable, incomplete.** Phases 0–4 of 11 are done. The agent loop
+> works end to end: a request runs as many upstream turns as the task needs,
+> with `read`, `glob`, `grep`, `edit` and `write` against a confined workspace.
+> Not yet implemented: the `bash` tool, streaming, provider quirk profiles, and
+> context compaction. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -37,7 +37,28 @@ export HARNESS_UPSTREAM_MODEL=gpt-4.1
 ./harness-api
 ```
 
-Then point any OpenAI client at `http://127.0.0.1:8080/v1`.
+Then point any OpenAI client at `http://127.0.0.1:8080/v1`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://127.0.0.1:8080/v1", api_key="unused")
+
+resp = client.chat.completions.create(
+    model="gpt-4.1",
+    messages=[{"role": "user", "content": "rename oldName to newName everywhere"}],
+    extra_body={"harness": {"workspace": "/path/to/your/project"}},
+)
+print(resp.choices[0].message.content)
+```
+
+Omit `harness.workspace` and the agent gets a fresh empty workspace instead.
+The response carries an `X-Harness-Session` header; send it back as
+`harness.session_id` to continue in the same workspace, which also preserves
+what the agent has already read.
+
+`usage` is the total across every upstream call the request made, not just the
+last one.
 
 Configuration layers lowest to highest: built-in defaults, JSON config file
 (`-config`), `HARNESS_*` environment variables, then explicitly-passed flags.
@@ -56,10 +77,11 @@ A flag left at its zero value does not clobber a value set by file or env.
 
 Read this before binding to anything routable.
 
-**This server is designed to execute code on behalf of its callers.** Once the
-agent loop and its shell tool land, anyone who can reach `/v1/*` can run
-arbitrary commands as the server's user. That is the feature, not a flaw — but
-it means the endpoint is remote code execution by design.
+**This server is designed to execute code on behalf of its callers.** It already
+reads and writes files in a workspace you nominate, and once the shell tool
+lands, anyone who can reach `/v1/*` can run arbitrary commands as the server's
+user. That is the feature, not a flaw — but it means the endpoint is remote code
+execution by design.
 
 The posture is *trusted local users*: prevent accidents and limit blast radius,
 not contain an adversary.
@@ -126,8 +148,8 @@ gofmt -l ./internal ./cmd
 | 1 | Wire types, passthrough proxy | done |
 | 2 | Streaming reader, delta accumulator, transcripts | done |
 | 3 | Workspace, path jail, fs-observation ledger, `read` + `glob` | done |
-| 4 | The agent loop, `grep` / `write` / `edit` | next |
-| 5 | `bash` and the `Shell` interface | |
+| 4 | The agent loop, `grep` / `write` / `edit` | done |
+| 5 | `bash` and the `Shell` interface | next |
 | 6 | Session binding, agent streaming, `/v1/sessions` | |
 | 7 | Monotonic tool guards, budgets | |
 | 8 | Provider quirk profiles and autodetect | |

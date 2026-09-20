@@ -4,17 +4,22 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/upstream"
+	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
 // handleChatCompletions serves POST /v1/chat/completions.
 //
-// At this phase the handler is a faithful proxy: decode, validate, forward,
-// relay. The agent loop slots in where forwardOnce is called, once the tools and
-// workspace exist. Proving the schema against real OpenAI clients before adding
-// agent complexity means any later failure is unambiguously the agent's fault.
+// The request is run through the agent loop rather than forwarded, so a single
+// call may produce many upstream calls. The reported usage is the total across
+// all of them.
+//
+// Session binding is still minimal: every request gets a fresh ephemeral
+// workspace, which is destroyed when it goes idle. Reattaching to an existing
+// session over several requests arrives with the binding resolver.
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := RequestIDFromContext(r.Context())
 
@@ -35,27 +40,102 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if req.Stream {
-		// Streaming arrives in the next phase. Saying so plainly beats a hang or a
-		// silently non-streamed response that clients will misparse.
+		// Streaming an agent run is not the same problem as streaming a
+		// completion — intermediate turns have to be buffered or the answer
+		// arrives interleaved with the model's tool-calling preamble. Saying so
+		// plainly beats a hang or a silently non-streamed response.
 		oai.WriteError(w, oai.NewInvalidRequest(
 			"streaming is not implemented yet; retry with \"stream\": false", "stream"), reqID)
 		return
 	}
 
-	resp, err := s.upstream.Complete(r.Context(), req)
+	session, release, err := s.acquireSession(req)
 	if err != nil {
-		if errors.Is(err, r.Context().Err()) && r.Context().Err() != nil {
+		oai.WriteError(w, err, reqID)
+		return
+	}
+	defer release()
+
+	result, err := s.agent.Run(r.Context(), session, req)
+	if err != nil {
+		if r.Context().Err() != nil {
 			// The caller hung up. Nothing to write to, and nothing worth logging
 			// as an error.
-			s.log.Debug("client disconnected before upstream responded", "request_id", reqID)
+			s.log.Debug("client disconnected during the agent run", "request_id", reqID)
 			return
 		}
-		s.log.Error("upstream completion failed", "request_id", reqID, "error", err)
+		var apiErr *oai.APIError
+		if errors.As(err, &apiErr) {
+			oai.WriteError(w, apiErr, reqID)
+			return
+		}
+		s.log.Error("agent run failed",
+			"request_id", reqID, "session_id", session.ID(), "error", err)
 		oai.WriteError(w, upstream.ToAPIError(err), reqID)
 		return
 	}
 
-	writeJSON(w, http.StatusOK, resp)
+	s.log.Info("agent run complete",
+		"request_id", reqID,
+		"session_id", session.ID(),
+		"stop", result.Stop,
+		"turns", result.Turns,
+		"total_tokens", result.Usage.TotalTokens,
+		"duration_ms", result.Elapsed.Milliseconds())
+
+	// The session id goes back in a header so a caller can reattach to this
+	// workspace, even though nothing reads it back yet.
+	w.Header().Set("X-Harness-Session", session.ID())
+
+	writeJSON(w, http.StatusOK, result.ToResponse(reqID, req.Model, time.Now().Unix()))
+}
+
+// acquireSession resolves the workspace for a request and locks it.
+//
+// The returned release function must always be called. The session is held for
+// the whole run rather than per tool call: tools mutate both the filesystem and
+// the observation ledger, and two requests interleaving on one workspace would
+// produce failures nobody could reconstruct from a transcript.
+func (s *Server) acquireSession(req *oai.ChatCompletionRequest) (*workspace.Session, func(), error) {
+	if req.Harness != nil && req.Harness.SessionID != "" {
+		session, ok := s.sessions.Get(req.Harness.SessionID)
+		if !ok {
+			return nil, nil, oai.NewInvalidRequest(
+				"unknown or expired session "+req.Harness.SessionID+
+					"; omit harness.session_id to start a new one", "harness.session_id")
+		}
+		if !session.TryLock() {
+			// Blocking would mean waiting out another request's agent loop, which
+			// can legitimately run for minutes.
+			return nil, nil, &oai.APIError{
+				Status: http.StatusConflict, Type: "invalid_request_error",
+				Message: "this session is already handling another request",
+				Param:   "harness.session_id",
+			}
+		}
+		session.Touch()
+		return session, session.Unlock, nil
+	}
+
+	var (
+		session *workspace.Session
+		err     error
+	)
+	if req.Harness != nil && req.Harness.Workspace != "" {
+		session, err = s.sessions.CreateAt(req.Harness.Workspace)
+		if err != nil {
+			return nil, nil, oai.NewInvalidRequest(
+				"could not use that workspace: "+err.Error(), "harness.workspace")
+		}
+	} else {
+		session, err = s.sessions.CreateEphemeral()
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+
+	session.Lock()
+	return session, session.Unlock, nil
 }
 
 // decodeChatRequest parses and validates a chat completion request body.

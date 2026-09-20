@@ -101,7 +101,18 @@ func run(args []string) error {
 		log.Warn("no auth tokens configured; any local process can drive this agent")
 	}
 
-	srv := server.New(&cfg, log)
+	srv, err := server.New(&cfg, log)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Idle workspaces are reclaimed in the background. The sweeper is tied to
+	// the signal context so it stops before the shutdown path starts removing
+	// the same directories.
+	go srv.Sessions().Run(ctx)
 
 	httpSrv := &http.Server{
 		Addr:              cfg.Server.Addr,
@@ -109,9 +120,6 @@ func run(args []string) error {
 		ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout.Duration(),
 		ErrorLog:          nil,
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -142,6 +150,13 @@ func run(args []string) error {
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
+
+	// After in-flight requests have drained, so nothing has a workspace pulled
+	// out from under it.
+	if err := srv.Sessions().Close(); err != nil {
+		log.Error("releasing workspaces", "error", err)
+	}
+
 	log.Info("shutdown complete")
 	return nil
 }

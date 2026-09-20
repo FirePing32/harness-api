@@ -27,6 +27,9 @@ func newTestServer(t *testing.T, provider http.HandlerFunc, mutate func(*config.
 	cfg.Upstream.Model = "test-model"
 	cfg.Upstream.Timeout = config.Duration(5 * time.Second)
 	cfg.Upstream.MaxRetries = 0
+	// Each server gets its own workspace root, so ephemeral sessions from one
+	// test cannot be seen or reclaimed by another.
+	cfg.Workspace.Root = t.TempDir()
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -35,7 +38,11 @@ func newTestServer(t *testing.T, provider http.HandlerFunc, mutate func(*config.
 	}
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	s := New(&cfg, log)
+	s, err := New(&cfg, log)
+	if err != nil {
+		t.Fatalf("building the server: %v", err)
+	}
+	t.Cleanup(func() { s.Sessions().Close() })
 
 	front := httptest.NewServer(s.Handler())
 	t.Cleanup(front.Close)
@@ -77,7 +84,9 @@ func decodeError(t *testing.T, resp *http.Response) oai.ErrorEnvelope {
 	return env
 }
 
-func TestChatCompletionsPassthrough(t *testing.T) {
+func TestChatCompletionsReturnsTheModelsAnswer(t *testing.T) {
+	// No longer a passthrough: the request goes through the agent loop, which
+	// happens to need one turn when the model asks for no tools.
 	front := newTestServer(t, okProvider, nil)
 
 	resp := postJSON(t, front.URL+"/v1/chat/completions",

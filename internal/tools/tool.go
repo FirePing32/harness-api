@@ -88,6 +88,13 @@ const (
 	CodeUnknownTool = "UNKNOWN_TOOL"
 	CodePanic       = "TOOL_PANIC"
 	CodeCancelled   = "CANCELLED"
+
+	// CodeNoMatch and CodeAmbiguous are the two edit failures the model is
+	// expected to recover from on its own, and the ones whose error text does
+	// the most work. They are tracked separately in evals: a high rate of either
+	// is a signal about the error messages, not about the model.
+	CodeNoMatch   = "NO_MATCH"
+	CodeAmbiguous = "AMBIGUOUS_MATCH"
 )
 
 // Errorf builds a tool Error.
