@@ -1,0 +1,7 @@
+{
+  "name": "build-error",
+  "category": "04-build",
+  "prompt": "This Go program does not compile. Make it build, keeping the behaviour the code is clearly reaching for.",
+  "notes": "Two compiler errors of different kinds: a missing import and a call with the wrong arity. Both are reported by the toolchain with file and line, so this measures whether the agent reads a build error and acts on it rather than guessing. Requires bash: there is no other way to see the errors.",
+  "max_turns": 14
+}

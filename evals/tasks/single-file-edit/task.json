@@ -1,0 +1,8 @@
+{
+  "name": "single-file-edit",
+  "category": "01-edit",
+  "prompt": "In inventory.py, rename the function calc_total to calculate_total. Update every call site. Do not change any behaviour.",
+  "notes": "The floor. One file, one symbol, three call sites, no ambiguity. A harness that cannot do this reliably has a broken edit tool, and every other number in the suite is noise until this one is 3/3.",
+  "max_turns": 8,
+  "check": "check.sh"
+}

@@ -1,0 +1,7 @@
+{
+  "name": "grep-discovery",
+  "category": "10-search",
+  "prompt": "Somewhere in this module a constant caps the size of a single wire frame. Find it and write its value in bytes, as a plain number, into a file called LIMIT.txt.",
+  "notes": "Nothing in the prompt names the file, the package or the identifier, so the only route is search. Four packages contain a similarly-shaped Timeout and storage has a MaxObjectBytes, so a careless search returns the wrong constant and the task fails on the value rather than on the attempt.",
+  "max_turns": 10
+}

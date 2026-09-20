@@ -1,0 +1,8 @@
+{
+  "name": "large-file-pagination",
+  "category": "07-pagination",
+  "prompt": "audit.log contains exactly one FATAL line. Find it and write its error code (the value of code=) into a file called INCIDENT.txt, containing just the code.",
+  "notes": "The target sits at line 3607 of 4200, well past the 2000-line read ceiling. A harness whose read tool truncates without saying how to continue loses this task outright; one whose grep works finds it in a single call. The turn budget is the real measurement here, not the pass.",
+  "max_turns": 10,
+  "must_survive": ["audit.log"]
+}

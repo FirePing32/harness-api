@@ -1,0 +1,7 @@
+{
+  "name": "multi-file-refactor",
+  "category": "02-refactor",
+  "prompt": "Rename the exported function FetchRecord to LoadRecord throughout this Go module, including its doc comment and every call site. The package must still build and its tests must still pass.",
+  "notes": "The same operation as single-file-edit, spread over four files. It separates a harness that greps for call sites from one that edits the file it happens to be looking at, and the test file is one of the call sites, so a partial rename fails to compile rather than failing silently.",
+  "max_turns": 14
+}

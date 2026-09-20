@@ -1,0 +1,7 @@
+{
+  "name": "bug-fix-red-green",
+  "category": "03-bugfix",
+  "prompt": "The tests in this Go module are failing. Find the bug in the source and fix it. Do not modify the tests.",
+  "notes": "Red to green, with the degenerate solution blocked. Merge shrinks an interval it should have extended; the fix is one line. The checker refuses any run that edited merge_test.go, because 'make the tests pass' has an easier answer that every model finds eventually and a checker that only runs the suite pays for it.",
+  "max_turns": 14
+}

@@ -184,6 +184,10 @@ func (l *Ledger) Authorize(path string, current []byte, exists bool) error {
 
 	switch {
 	case !ok:
+		// Edit-shaped wording, because edit is the caller that sees it: write
+		// rewrites this for the create case in annotateWriteAuthError, where
+		// the caller-facing display path is also available. Saying it in both
+		// places would be two copies of one decision, free to drift.
 		return &ObservationError{
 			Code: CodeNotObserved, Path: path,
 			Reason: fmt.Sprintf("cannot modify %q: the file has not been read in this session. "+

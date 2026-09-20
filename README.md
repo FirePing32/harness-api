@@ -4,12 +4,13 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: feature-complete, unproven.** Phases 0–9 of 11 are done: the full
-> core tool set (`read`, `glob`, `grep`, `edit`, `write`, `bash`), streaming,
-> persistent sessions, tool guards, provider quirk profiles and context
-> compaction. What is missing is the part that would tell you whether any of
-> it *works* — there is no eval suite yet, so every capability claim here is
-> an argument from design rather than a measurement. See [Roadmap](#roadmap).
+> **Status: feature-complete and measurable, but not yet measured.** Phases
+> 0–10 of 11 are done: the full core tool set (`read`, `glob`, `grep`, `edit`,
+> `write`, `bash`), streaming, persistent sessions, tool guards, provider quirk
+> profiles, context compaction, and an eval harness with ten programmatically
+> checked tasks. The harness is verified end to end against a scripted model;
+> **no numbers against a real model are published here yet**, so the capability
+> claims below remain arguments from design. See [Evaluation](#evaluation).
 
 ## Why
 
@@ -197,6 +198,35 @@ not contain an adversary.
   a destructive-command denylist, and commands that cannot finish in the time
   left. The denylist catches accidents, not adversaries.
 
+## Evaluation
+
+```sh
+go build -o harness-eval ./cmd/harness-eval
+
+harness-eval run -model gpt-4.1 -label baseline -out baseline.json
+harness-eval compare baseline.json candidate.json
+```
+
+Ten tasks, three repetitions each, checked by programs rather than by an LLM
+judge — judges disagree with themselves across runs, and a regression detector
+that is itself noisy detects noise. Tracked: pass@1, mean turns to success,
+tokens per task, and **tool error rate per tool**. That last one is the direct
+feedback signal on tool ergonomics: if `edit` errors on a third of its calls,
+the fix is in `edit.go`, not in the prompt.
+
+Two things it refuses to do. A run that never reached the model is excluded
+from the pass-rate denominator and reported separately, because a rate-limited
+afternoon otherwise looks identical to a capability regression. And `compare`
+runs a Fisher exact test before calling a difference real — at three
+repetitions per task, 20/30 against 24/30 is p = 0.38, and a tool that reports
+that as a win gets used to justify changes that did nothing.
+
+Both directions of every checker are verified without a model:
+`go test ./internal/eval/` asserts that no checker passes an untouched repo,
+and `./evals/verify-checkers.sh` asserts that each one accepts a real solution
+and rejects the specific near-miss it exists to catch. See
+[docs/evals.md](docs/evals.md).
+
 ## Design notes
 
 A few decisions that are load-bearing, and why:
@@ -286,8 +316,8 @@ gofmt -l ./internal ./cmd
 | 7 | Monotonic tool guards, budgets | done |
 | 8 | Provider quirk profiles and autodetect | done |
 | 9 | Context compaction and token estimation | done |
-| 10 | Eval harness with programmatic checkers | next |
-| 11 | Hardening, rlimits, audit log, docs | |
+| 10 | Eval harness with programmatic checkers | done |
+| 11 | Hardening, rlimits, audit log, full 30-task suite | next |
 
 ## Dependencies
 

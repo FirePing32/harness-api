@@ -1,0 +1,7 @@
+{
+  "name": "feature-add-hidden-test",
+  "category": "05-feature",
+  "prompt": "Implement the Compare function in semver.go according to its doc comment. Replace the panic with a working implementation.",
+  "notes": "The specification is the doc comment; the test is withheld and applied afterwards. Writing to a visible test invites fitting the test rather than the spec, which measures the wrong thing. The hidden cases cover what a careless implementation gets wrong: numeric rather than lexical ordering, the optional v prefix, short versions, and unparseable input.",
+  "max_turns": 16
+}

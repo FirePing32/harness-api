@@ -1,0 +1,8 @@
+{
+  "name": "bash-dependent",
+  "category": "06-bash",
+  "prompt": "Run the project's tally script and write the total it reports into a new file called TOTAL.txt, containing just the number and nothing else.",
+  "notes": "Cannot be done without executing something. The number is the sum of a column across three CSVs; adding it by eye is possible but the README tells the agent not to, and a wrong total distinguishes a model that ran the script from one that guessed. Also checks that the file tools were not used to fake the result.",
+  "max_turns": 10,
+  "must_survive": ["tools/tally.sh", "data/q1.csv", "data/q2.csv", "data/q3.csv"]
+}
