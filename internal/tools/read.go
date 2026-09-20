@@ -93,7 +93,7 @@ func (*Read) Execute(ctx context.Context, s *workspace.Session, raw json.RawMess
 	info, err := j.Stat(args.Path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// A confirmed absence is a real observation, and it is what makes
+			// A confirmed absence is still a real observation, and it is what makes
 			// creating this file legal later. Recording it here is why an agent
 			// can check-then-create without a separate "does it exist" tool.
 			s.Ledger().ObserveAbsent(rel, s.Turn())

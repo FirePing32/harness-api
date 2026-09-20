@@ -13,32 +13,17 @@ import (
 // it is what the first real run against a model measured, and these assertions
 // exist so a future trim of the prompt cannot quietly put it back.
 
-func TestPromptStatesTheRulesTheLedgerEnforces(t *testing.T) {
-	// Measured against nvidia/nemotron-3.5-lightning: creating a file took four
-	// turns, because the prompt said "read before editing" and the ledger also
-	// requires it before creating. The model went straight to write, was
-	// refused with FS_NOT_OBSERVED, then read the missing path and succeeded.
-	// It recovered correctly — the error message was fine. The prompt was the
-	// defect.
-	guidance := toolGuidance
-
-	if !strings.Contains(guidance, "before editing it") {
+func TestPromptStatesTheRuleTheLedgerEnforces(t *testing.T) {
+	// Read-before-edit is enforced, so it has to be stated: a rule the model
+	// can only discover by being refused costs a turn every time.
+	//
+	// Creation deliberately has no such rule any more. An earlier version
+	// required a confirmed absence before creating a file, and stating that
+	// here did not stop the model going straight to write — measured, twice.
+	// The rule was then removed as not earning its cost, so there is nothing
+	// left to say about it.
+	if !strings.Contains(toolGuidance, "before editing it") {
 		t.Error("the prompt does not state the read-before-edit rule")
-	}
-
-	lower := strings.ToLower(guidance)
-	if !strings.Contains(lower, "creating a new file") {
-		t.Error("the prompt does not state that creation needs a prior read; " +
-			"the model will discover it by being refused, one wasted turn per file")
-	}
-
-	// The non-obvious half: a read that reports nothing there is not a failure,
-	// it is the permission. Without saying so, "read it first" reads as absurd
-	// advice for a file that does not exist yet.
-	if !strings.Contains(lower, "nothing is there") &&
-		!strings.Contains(lower, "reporting that nothing") {
-		t.Error("the prompt does not explain that the failing read is what permits " +
-			"the write, which is the part a model cannot infer")
 	}
 }
 

@@ -59,9 +59,17 @@ func TestLedgerIdenticalContentAtDifferentTimeIsNotStale(t *testing.T) {
 	}
 }
 
-func TestLedgerConfirmedAbsenceAuthorisesCreation(t *testing.T) {
-	// Reading a path that is not there is a successful observation, and it is
-	// what makes file creation possible at all.
+func TestLedgerAllowsCreationWithOrWithoutAPriorCheck(t *testing.T) {
+	// Creating a file that is not there is permitted either way. A prior read
+	// is no longer required — it protected nothing, since the caller stats the
+	// path under the session lock before asking — but observing the absence
+	// first must still work, because that is what an agent that read the path
+	// anyway will have done.
+	unchecked := NewLedger()
+	if err := unchecked.Authorize("new.go", nil, false); err != nil {
+		t.Fatalf("creating an unchecked absent file was refused: %v", err)
+	}
+
 	l := NewLedger()
 	l.ObserveAbsent("new.go", 1)
 

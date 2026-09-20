@@ -21,11 +21,18 @@ import (
 //
 // Two cases are easy to get wrong, and both are handled here:
 //
-//   - Confirmed absence is an observation. A model that reads a path, is told
-//     it does not exist, and then creates it has done exactly the right thing.
-//     Requiring a successful read before every write would make file creation
-//     impossible. But absence must still be *checked* at write time, or two
-//     creators race and one silently overwrites the other.
+//   - Creation is not gated on a prior read, and used to be. The rule was that
+//     a create needed a confirmed absence, to stop two creators racing. It
+//     never bought that: the caller stats the path under the session lock
+//     immediately before asking, so "not there" holds at the moment of the
+//     write and creating it destroys nothing. Requiring an earlier read only
+//     widened the window — one turn apart instead of a few microseconds.
+//
+//     It did cost a turn on every file creation, measured against a real
+//     model, and saying so in the system prompt did not stop the model going
+//     straight to write. What still matters, and is still enforced, is that
+//     absence is *checked* at write time: a path that turns out to exist is
+//     refused unless its contents were read.
 //
 //   - Compaction invalidates observations. When the summariser drops the turn
 //     that contained a file's contents, the model no longer has those contents,
@@ -95,7 +102,7 @@ func (l *Ledger) Observe(path string, content []byte, modTime time.Time, turn in
 }
 
 // ObserveAbsent records that a path was checked and found not to exist. This is
-// what authorises creating it.
+// what keeps a later create honest if something else gets there first.
 func (l *Ledger) ObserveAbsent(path string, turn int) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -183,6 +190,29 @@ func (l *Ledger) Authorize(path string, current []byte, exists bool) error {
 	l.mu.Unlock()
 
 	switch {
+	case !ok && !exists:
+		// Creating a file that is not there. Permitted without a prior read,
+		// and this used to be refused.
+		//
+		// The rule was that creation needed a confirmed absence, to avoid
+		// clobbering a concurrent creator. It does not buy that. The caller
+		// holds the session lock and has just stat'd the path, so "not there"
+		// is established at the moment of the write — creating it destroys
+		// nothing. Requiring an earlier read actually *widened* the race it was
+		// meant to close: observing absence on one turn and writing on the next
+		// is a far larger window than checking and writing inside one call.
+		//
+		// What it did buy was one wasted turn on every file creation. Measured
+		// against a real model: write, refused, read, write — four turns and
+		// 10k tokens for one file. Stating the rule in the system prompt did
+		// not stop the model going straight to write, so the cost was not
+		// recoverable by explaining it better.
+		//
+		// Every case where data can actually be lost is still refused below:
+		// an existing file that was never read, one whose contents changed
+		// since, and one whose observation was summarised away.
+		return nil
+
 	case !ok:
 		// Edit-shaped wording, because edit is the caller that sees it: write
 		// rewrites this for the create case in annotateWriteAuthError, where

@@ -259,9 +259,12 @@ different values that `omitempty` renders identically. Twelve transcripts in
 
 **Read-before-edit as a version check, not a flag.** The ledger records a content
 hash, so a file rewritten by a shell command invalidates the observation and
-forces a re-read. A confirmed absence is itself an observation, and is what
-authorises creating a file. Compaction marks entries stale, because otherwise the
-invariant quietly degrades into a rubber stamp once the contents leave context.
+forces a re-read. Creating a file that is not there needs no prior read at all:
+the path is stat'd under the session lock immediately before the write, so
+nothing can be destroyed. Requiring an earlier read bought nothing and cost a
+measured turn on every file creation. Compaction marks entries stale, because
+otherwise the invariant quietly degrades into a rubber stamp once the contents
+leave context.
 
 **Asymmetric truncation.** File views drop the tail and tell the model how to
 continue. Shell output drops the *head*, because the error in a failed build is

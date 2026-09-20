@@ -63,22 +63,41 @@ func TestWriteAllowsOverwriteAfterReading(t *testing.T) {
 	}
 }
 
-func TestWriteCreateErrorSaysToReadFirstNotToModify(t *testing.T) {
-	// The ledger's default wording is phrased for edits. "Cannot modify a file
-	// that has not been read" is confusing advice when creating something new.
+func TestWriteCreatesANewFileWithoutAPriorRead(t *testing.T) {
+	// This used to be refused, on the theory that a confirmed absence stopped a
+	// create from clobbering a concurrent creator. It does not: the path is
+	// stat'd under the session lock immediately before this, so "not there" is
+	// established at the moment of the write and creating it destroys nothing.
+	//
+	// The refusal did cost a turn on every file creation. Measured against a
+	// real model: write, refused, read, write — four turns for one file, and
+	// saying so in the system prompt did not stop it.
 	s := newSession(t, nil)
 
 	_, _, err := run(t, NewWrite(), s, map[string]any{
 		"path": "brand-new.go", "content": "x\n",
 	})
+	if err != nil {
+		t.Fatalf("creating a file that does not exist was refused: %v", err)
+	}
+	if got := fileContent(t, s, "brand-new.go"); got != "x\n" {
+		t.Errorf("content = %q", got)
+	}
+}
+
+func TestWriteStillRefusesToClobberAfterTheCreateRelaxation(t *testing.T) {
+	// The half that matters. Relaxing creation must not weaken the case where
+	// bytes can actually be lost.
+	s := newSession(t, map[string]string{"existing.go": "precious\n"})
+
+	_, _, err := run(t, NewWrite(), s, map[string]any{
+		"path": "existing.go", "content": "clobbered\n",
+	})
 	if err == nil {
-		t.Fatal("an unchecked create was allowed")
+		t.Fatal("overwrote an existing file nobody had read")
 	}
-	if strings.Contains(err.Error(), "cannot modify") {
-		t.Errorf("the create case uses edit wording: %q", err)
-	}
-	if !strings.Contains(err.Error(), "cannot create") {
-		t.Errorf("the error does not describe a create: %q", err)
+	if got := fileContent(t, s, "existing.go"); got != "precious\n" {
+		t.Errorf("the file was modified anyway: %q", got)
 	}
 }
 

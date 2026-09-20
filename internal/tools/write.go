@@ -100,11 +100,12 @@ func (*Write) Execute(_ context.Context, s *workspace.Session, raw json.RawMessa
 		return nil, Errorf(CodeIO, "could not open %s: %s", j.Display(rel), readErr)
 	}
 
-	// The same authorisation as edit, and for the same reason. Creating a file
-	// requires a confirmed absence; replacing one requires having seen what is
-	// being discarded, still unchanged.
+	// Replacing an existing file requires having seen what is being discarded,
+	// still unchanged. Creating one that is not there requires nothing: the
+	// path was just stat'd under the session lock, so the write destroys
+	// nothing. See the Authorize comment for why the old rule was dropped.
 	if err := s.Ledger().Authorize(rel, existing, exists); err != nil {
-		return nil, annotateWriteAuthError(err, j.Display(rel), exists)
+		return nil, err
 	}
 
 	if dir := path.Dir(rel); dir != "." && dir != "" {
@@ -136,22 +137,6 @@ func (*Write) Execute(_ context.Context, s *workspace.Session, raw json.RawMessa
 		Created:       !exists,
 		PreviousBytes: len(existing),
 	}, nil
-}
-
-// annotateWriteAuthError rewrites the ledger's edit-shaped wording for the
-// create case. "cannot modify a file that has not been read" is confusing
-// advice when the model is trying to create something that does not exist.
-func annotateWriteAuthError(err error, displayPath string, exists bool) error {
-	var oe *workspace.ObservationError
-	if !errors.As(err, &oe) || exists {
-		return err
-	}
-	return &workspace.ObservationError{
-		Code: oe.Code, Path: oe.Path,
-		Reason: fmt.Sprintf("cannot create %s: whether it already exists has not been "+
-			"checked in this session. Read it first — if it does not exist, the read will "+
-			"say so and the write will then be allowed.", displayPath),
-	}
 }
 
 func (*Write) Render(_ json.RawMessage, result any) string {

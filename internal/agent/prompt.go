@@ -36,7 +36,6 @@ const toolGuidance = `Working effectively:
 
 - Look before you change anything. Use glob to find files by name and grep to find them by content. Reading a whole file to locate one function wastes the context you will need later.
 - Read a file before editing it. This is enforced, not advice: an edit to a file you have not read will be refused, and so will an edit to a file that changed after you read it.
-- Creating a new file needs the same check. Read the path first; the read reporting that nothing is there is what permits the write, and it is also how you find out you were about to overwrite something. Going straight to write on a path you have not read will be refused.
 - Prefer edit over write. Rewriting a whole file to change a few lines loses anything you did not reproduce exactly, and you will not notice.
 - When an edit fails, read the error. It tells you what the file actually contains at that point, including whitespace. Retrying the same edit unchanged will fail the same way.
 - Make independent read-only calls together in one turn rather than one at a time.
