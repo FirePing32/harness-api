@@ -1,0 +1,147 @@
+# harness-api
+
+An OpenAI-compatible HTTP server that runs an agentic coding loop against any
+OpenAI-compatible model. Point an existing client at it, and the model gets a
+workspace, file tools, and a shell.
+
+> **Status: incomplete.** Phases 0–3 of 11 are done. What exists is the wire
+> layer, the streaming reader, the workspace and its tools — everything the
+> agent loop will sit between. The loop itself is not implemented yet, so
+> `/v1/chat/completions` currently proxies to the upstream provider and returns
+> what it says. See [Roadmap](#roadmap).
+
+## Why
+
+Agentic capability is dominated by the model. A harness cannot make a weak model
+strong — but it controls how much capability gets left on the table, and that
+gap is large. The same model can swing dozens of points on agentic benchmarks
+between a good harness and a poor one.
+
+The design follows [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
+(MIT), read at source rather than from secondary coverage. No DSH code is
+included here; the behaviours were reimplemented from its documented design.
+
+## Requirements
+
+Go 1.26 or later. `os.Root`, used for the path jail, needs 1.24+.
+
+## Running
+
+```sh
+go build -o harness-api ./cmd/harness-api
+
+export HARNESS_UPSTREAM_BASE_URL=https://api.openai.com/v1
+export HARNESS_UPSTREAM_API_KEY=sk-...      # or OPENAI_API_KEY
+export HARNESS_UPSTREAM_MODEL=gpt-4.1
+
+./harness-api
+```
+
+Then point any OpenAI client at `http://127.0.0.1:8080/v1`.
+
+Configuration layers lowest to highest: built-in defaults, JSON config file
+(`-config`), `HARNESS_*` environment variables, then explicitly-passed flags.
+A flag left at its zero value does not clobber a value set by file or env.
+
+| Flag | Purpose |
+|---|---|
+| `-addr` | Listen address. Default `127.0.0.1:8080`. |
+| `-allow-non-loopback` | Required to bind anything but loopback. See [Security](#security). |
+| `-upstream-base-url` | OpenAI-compatible endpoint. |
+| `-upstream-model` | Default model when a request does not name one. |
+| `-workspace-root` | Parent directory for ephemeral workspaces. |
+| `-log-level` / `-log-format` | `debug\|info\|warn\|error`, `json\|text`. |
+
+## Security
+
+Read this before binding to anything routable.
+
+**This server is designed to execute code on behalf of its callers.** Once the
+agent loop and its shell tool land, anyone who can reach `/v1/*` can run
+arbitrary commands as the server's user. That is the feature, not a flaw — but
+it means the endpoint is remote code execution by design.
+
+The posture is *trusted local users*: prevent accidents and limit blast radius,
+not contain an adversary.
+
+- Binds `127.0.0.1` by default. A non-loopback bind requires `-allow-non-loopback`
+  **and** configured auth tokens; the server refuses to start otherwise.
+- Bearer-token auth on `/v1/*`, constant-time compared. `/healthz` and `/readyz`
+  sit outside it.
+- File tools are confined to the session workspace by `os.Root`, which resolves
+  every path component against a held directory descriptor. A symlink out of the
+  tree fails at the syscall, including one planted after the path was validated.
+- The shell tool, once implemented, will **not** be jailed. `cd /etc && cat passwd`
+  will work. Process-group kill on timeout and an output cap are ergonomics, not
+  containment.
+- Credentials are redacted in the log handler rather than at call sites.
+  Upstream error bodies are never echoed to clients — several providers reflect
+  the request, including the API key.
+
+## Design notes
+
+A few decisions that are load-bearing, and why:
+
+**One wire schema for both directions** (`internal/oai`). The agent loop's
+dominant operation is appending to message history and re-sending it. Two type
+sets would mean a full conversion every turn and a place for fields to disappear
+silently mid-conversation.
+
+**One outbound serialisation chokepoint** (`upstream.BuildBody`). Rules like
+"never send `reasoning_content`" — DeepSeek returns 400 — are enforced once
+rather than remembered at every call site.
+
+**Tool-call accumulation keyed by `index`**. `id` and `name` are set-if-empty;
+`arguments` is only ever concatenated and never parsed until the stream ends,
+because fragments split mid-escape. `Index` is `*int` because `0` and absent are
+different values that `omitempty` renders identically. Twelve transcripts in
+[`testdata/sse`](testdata/sse) pin the provider variations down.
+
+**Read-before-edit as a version check, not a flag.** The ledger records a content
+hash, so a file rewritten by a shell command invalidates the observation and
+forces a re-read. A confirmed absence is itself an observation, and is what
+authorises creating a file. Compaction marks entries stale, because otherwise the
+invariant quietly degrades into a rubber stamp once the contents leave context.
+
+**Asymmetric truncation.** File views drop the tail and tell the model how to
+continue. Shell output drops the *head*, because the error in a failed build is
+at the bottom under the progress log.
+
+**Tool error messages are implementation, not decoration.** They are the model's
+only recovery signal, so each one says what was wrong and what to do next.
+
+## Development
+
+```sh
+go test -race ./...     # required; the concurrency design depends on it
+go vet ./...
+gofmt -l ./internal ./cmd
+```
+
+## Roadmap
+
+| Phase | Deliverable | Status |
+|---|---|---|
+| 0 | Skeleton: config, routing, health, graceful shutdown | done |
+| 1 | Wire types, passthrough proxy | done |
+| 2 | Streaming reader, delta accumulator, transcripts | done |
+| 3 | Workspace, path jail, fs-observation ledger, `read` + `glob` | done |
+| 4 | The agent loop, `grep` / `write` / `edit` | next |
+| 5 | `bash` and the `Shell` interface | |
+| 6 | Session binding, agent streaming, `/v1/sessions` | |
+| 7 | Monotonic tool guards, budgets | |
+| 8 | Provider quirk profiles and autodetect | |
+| 9 | Context compaction and token estimation | |
+| 10 | Eval harness with programmatic checkers | |
+| 11 | Hardening, rlimits, audit log, docs | |
+
+## Dependencies
+
+Two, deliberately: [`doublestar/v4`](https://github.com/bmatcuk/doublestar) for
+globbing, and the Go standard library. Routing is `net/http`, logging is
+`log/slog`. No OpenAI SDK — the quirks layer needs byte-level request control,
+and the official SDKs fight unknown fields and non-standard providers.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
