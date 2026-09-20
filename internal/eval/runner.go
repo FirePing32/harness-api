@@ -151,8 +151,14 @@ func (r *Runner) RunTask(ctx context.Context, t *Task) []Run {
 	return runs
 }
 
-func (r *Runner) runOnce(ctx context.Context, t *Task, rep int) Run {
-	run := Run{Task: t.Name, Rep: rep}
+// runOnce executes one repetition.
+//
+// The return value is named so that the deferred timing write lands. With an
+// unnamed result, `return run` copies the struct before the defer runs and the
+// duration is discarded — every run reported 0ms, through a whole calibration
+// pass, without anything looking wrong.
+func (r *Runner) runOnce(ctx context.Context, t *Task, rep int) (run Run) {
+	run = Run{Task: t.Name, Rep: rep}
 	start := time.Now()
 	defer func() { run.DurationMS = time.Since(start).Milliseconds() }()
 

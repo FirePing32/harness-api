@@ -1,9 +1,11 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -183,6 +185,106 @@ func TestRunnerPassesWhenTheCheckerSucceeds(t *testing.T) {
 	}
 	if runs[0].Errored() {
 		t.Fatalf("unexpected error: %s", runs[0].Error)
+	}
+}
+
+func TestRunnerRecordsDurationAndTokens(t *testing.T) {
+	// Both of these silently reported zero through an entire calibration pass,
+	// and nothing looked wrong: the table just showed "—" where the numbers
+	// should have been. Two of the four metrics this harness exists to produce.
+	//
+	// Duration was lost to an unnamed return value — `return run` copies the
+	// struct before the deferred timing write lands. Tokens were lost because
+	// usage on a stream is opt-in and the client never asked.
+	task := fixture(t,
+		Task{Name: "metrics", Category: "test", Prompt: "work"},
+		map[string]string{"a.txt": "x"}, "true")
+
+	r := newRunner(t, &fakeServer{answer: "done"})
+
+	run := r.RunTask(context.Background(), task)[0]
+	if !run.Passed {
+		t.Fatalf("run failed: %v", run.Failures)
+	}
+	if run.DurationMS <= 0 {
+		t.Errorf("DurationMS = %d; a run that did real work reported no time",
+			run.DurationMS)
+	}
+	if run.Usage.TotalTokens <= 0 {
+		t.Errorf("TotalTokens = %d; the run reported no token usage",
+			run.Usage.TotalTokens)
+	}
+}
+
+func TestClientAsksForUsageOnTheStream(t *testing.T) {
+	// The protocol detail behind the bug: without stream_options.include_usage
+	// the final chunk carries no usage at all.
+	var gotIncludeUsage bool
+	srv := &fakeServer{answer: "done"}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var parsed struct {
+			StreamOptions *struct {
+				IncludeUsage bool `json:"include_usage"`
+			} `json:"stream_options"`
+		}
+		json.Unmarshal(body, &parsed)
+		gotIncludeUsage = parsed.StreamOptions != nil && parsed.StreamOptions.IncludeUsage
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		srv.handler()(w, r)
+	}))
+	defer ts.Close()
+
+	if _, err := NewClient(ts.URL, "", "m").Run(
+		context.Background(), Request{Prompt: "hi", Workspace: t.TempDir()},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if !gotIncludeUsage {
+		t.Error("the eval client did not opt into usage; tokens per task will be zero")
+	}
+}
+
+func TestUsageFallsBackToTheDoneEvent(t *testing.T) {
+	// A proxy that drops the usage chunk should cost the token metric, not
+	// zero it. The done event carries the same total.
+	ts := httptest.NewServer(usageLessHandler())
+	defer ts.Close()
+
+	tr, err := NewClient(ts.URL, "", "m").Run(
+		context.Background(), Request{Prompt: "hi", Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tr.Usage.TotalTokens != 999 {
+		t.Errorf("TotalTokens = %d, want 999 recovered from the done event",
+			tr.Usage.TotalTokens)
+	}
+}
+
+// usageLessHandler streams a run that never sends a usage chunk.
+func usageLessHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+
+		emit := func(delta oai.Delta) {
+			raw, _ := json.Marshal(oai.ChatCompletionChunk{
+				ID: "c", Object: "chat.completion.chunk",
+				Choices: []oai.ChunkChoice{{Delta: delta}},
+			})
+			fmt.Fprintf(w, "data: %s\n\n", raw)
+			flusher.Flush()
+		}
+		turn, _ := json.Marshal(agent.Event{Type: agent.EventTurnStart})
+		emit(oai.Delta{Harness: turn})
+		done, _ := json.Marshal(agent.Event{
+			Type: agent.EventDone, Stop: agent.StopComplete, TotalTokens: 999,
+		})
+		emit(oai.Delta{Harness: done})
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		flusher.Flush()
 	}
 }
 

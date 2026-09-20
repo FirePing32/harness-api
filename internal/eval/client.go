@@ -119,6 +119,11 @@ func (c *Client) Run(ctx context.Context, req Request) (*Transcript, error) {
 		Model:    c.Model,
 		Messages: []oai.Message{{Role: oai.RoleUser, Content: oai.TextContent(req.Prompt)}},
 		Stream:   true,
+		// Usage on a stream is opt-in, per the OpenAI protocol. Without this
+		// the final chunk carries no usage at all and "tokens per task" — one
+		// of the four metrics this suite exists to produce — silently reports
+		// zero for every run.
+		StreamOptions: &oai.StreamOptions{IncludeUsage: true},
 		Harness: &oai.HarnessRequestExt{
 			Workspace:    req.Workspace,
 			StreamEvents: true,
@@ -182,7 +187,10 @@ func (c *Client) consume(resp *http.Response) (*Transcript, error) {
 	defer stream.Close()
 
 	t := &Transcript{SessionID: resp.Header.Get("X-Harness-Session")}
-	var answer strings.Builder
+	var (
+		answer     strings.Builder
+		doneTokens int
+	)
 
 	for {
 		chunk, err := stream.Recv()
@@ -217,10 +225,18 @@ func (c *Client) consume(resp *http.Response) (*Transcript, error) {
 				t.Turns++
 			case agent.EventDone:
 				t.Stop = ev.Stop
+				// The done event carries the same total. Kept as a fallback so
+				// a provider or proxy that drops the usage chunk costs the
+				// token metric rather than zeroing it — the failure mode that
+				// went unnoticed through a whole calibration pass.
+				doneTokens = ev.TotalTokens
 			}
 		}
 	}
 
 	t.Answer = answer.String()
+	if t.Usage.TotalTokens == 0 && doneTokens > 0 {
+		t.Usage.TotalTokens = doneTokens
+	}
 	return t, nil
 }
