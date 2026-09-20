@@ -1,0 +1,3 @@
+{"id":"chatcmpl-n1","object":"chat.completion.chunk","created":1700000000,"model":"ndjson-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Line "},"finish_reason":null}]}
+{"id":"chatcmpl-n1","object":"chat.completion.chunk","created":1700000000,"model":"ndjson-model","choices":[{"index":0,"delta":{"content":"delimited"},"finish_reason":null}]}
+{"id":"chatcmpl-n1","object":"chat.completion.chunk","created":1700000000,"model":"ndjson-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}

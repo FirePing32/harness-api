@@ -1,0 +1,9 @@
+: A zero-argument tool call. The only arguments fragment is an empty string, and
+: nothing follows it. The accumulated value is "", which is not valid JSON, so it
+: must be normalised to {} before anything tries to unmarshal it.
+data: {"id":"chatcmpl-z1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_noargs","type":"function","function":{"name":"list_sessions","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-z1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

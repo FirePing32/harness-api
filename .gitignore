@@ -1,0 +1,9 @@
+/harness-api
+/harness-eval
+/bin/
+*.test
+*.out
+config.json
+config.local.json
+.env
+.DS_Store

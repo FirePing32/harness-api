@@ -1,0 +1,8 @@
+:No space after the colon on either the comment or the data lines, and the stream
+:ends at EOF with no [DONE] sentinel. Treating a missing sentinel as an error
+:would break every provider that does this.
+data:{"id":"chatcmpl-v1","object":"chat.completion.chunk","created":1700000000,"model":"local-model","choices":[{"index":0,"delta":{"role":"assistant","content":"Hel"},"finish_reason":null}]}
+
+data:{"id":"chatcmpl-v1","object":"chat.completion.chunk","created":1700000000,"model":"local-model","choices":[{"index":0,"delta":{"content":"lo there"},"finish_reason":null}]}
+
+data:{"id":"chatcmpl-v1","object":"chat.completion.chunk","created":1700000000,"model":"local-model","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}

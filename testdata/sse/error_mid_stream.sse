@@ -1,0 +1,8 @@
+: The HTTP response was 200 and content had already started flowing when the
+: provider hit a failure. The error arrives as a normal SSE event carrying an
+: error object rather than a chunk. Reporting this as "malformed chunk" would
+: hide the real cause, which is usually a context-length or content-filter stop.
+data: {"id":"chatcmpl-x1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"Starting"},"finish_reason":null}]}
+
+data: {"error":{"message":"maximum context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}
+

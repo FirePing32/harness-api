@@ -1,0 +1,19 @@
+: Arguments split at the worst possible byte offsets: mid backslash-escape, and
+: mid \u escape sequence. Any parser that attempts json.Unmarshal on a fragment,
+: or that trims whitespace from one, corrupts the result. Fragments are only ever
+: concatenated; parsing happens once, at the end.
+:
+: Reassembled arguments are exactly:
+:   {"text":"a\"b\\c","note":"café \n done"}
+data: {"id":"chatcmpl-e1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_esc","type":"function","function":{"name":"write","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"text\":\"a\\"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"b\\\\c\",\"note\":\"caf\\u00"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"e9 \\n done\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-e1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

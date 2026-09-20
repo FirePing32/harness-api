@@ -1,0 +1,21 @@
+: Comment lines are used as keepalives by providers and by intermediate proxies
+: during long tool-heavy stretches. They must be skipped without producing events.
+: This file also splits one event across several data: lines, which per spec are
+: joined with newlines before parsing -- the JSON is only valid once rejoined.
+: keepalive
+
+data: {"id":"chatcmpl-k1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"first"},"finish_reason":null}]}
+
+: keepalive
+: keepalive
+
+data: {"id":"chatcmpl-k1","object":"chat.completion.chunk",
+data: "created":1700000000,"model":"m",
+data: "choices":[{"index":0,"delta":{"content":" second"},"finish_reason":null}]}
+
+: keepalive
+
+data: {"id":"chatcmpl-k1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

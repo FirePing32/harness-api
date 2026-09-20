@@ -1,0 +1,25 @@
+: Two parallel tool calls. id and name appear only on the first fragment for each
+: index; every later fragment carries arguments alone. Fragments for index 0 and
+: index 1 interleave, so array position is not identity -- only index is.
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_read_1","type":"function","function":{"name":"read","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_grep_2","type":"function","function":{"name":"grep","arguments":""}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"file_"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"{\"pat"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"path\":\"/m"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"tern\":\"TO"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"ain.go\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"DO\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-p1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

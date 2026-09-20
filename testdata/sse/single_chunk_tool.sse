@@ -1,0 +1,9 @@
+: A complete tool call in one chunk, arguments included. Providers that buffer
+: tool calls server-side do this. It must produce the same result as the
+: fragmented form, so the accumulator cannot assume more than one fragment.
+data: {"id":"chatcmpl-s1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_whole","type":"function","function":{"name":"bash","arguments":"{\"command\":\"go test ./...\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-s1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

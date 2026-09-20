@@ -1,0 +1,17 @@
+: reasoning_content deltas arrive first and must accumulate separately from
+: content. Echoing reasoning back upstream is a 400 on DeepSeek, so it has to stay
+: distinguishable from the answer rather than being concatenated into it.
+data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"The user asks for "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"reasoning_content":"a sum. 2 + 2 = 4."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":"The answer "},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{"content":"is 4."},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-r1","object":"chat.completion.chunk","created":1700000000,"model":"deepseek-reasoner","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+

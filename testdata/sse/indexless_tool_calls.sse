@@ -1,0 +1,17 @@
+: No fragment carries an index. Two distinct calls are distinguishable only by id.
+: A parser that defaults every indexless fragment to slot 0 concatenates the two
+: argument strings into JSON garbage, which is the failure this pins down.
+data: {"id":"chatcmpl-i1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-i1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_alpha","type":"function","function":{"name":"read","arguments":"{\"file_path\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-i1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_alpha","function":{"arguments":"\"/a.go\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-i1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_beta","type":"function","function":{"name":"glob","arguments":"{\"pattern\":"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-i1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_beta","function":{"arguments":"\"**/*.go\"}"}}]},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-i1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
+
+data: [DONE]
+

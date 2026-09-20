@@ -1,0 +1,11 @@
+: Every line here ends CRLF, including the blank event separators. A parser that
+: only strips \n leaves a stray \r on the payload, which json.Unmarshal tolerates
+: but which breaks an exact [DONE] comparison and any field-name matching.
+data: {"id":"chatcmpl-c1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"CR"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-c1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{"content":"LF"},"finish_reason":null}]}
+
+data: {"id":"chatcmpl-c1","object":"chat.completion.chunk","created":1700000000,"model":"m","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
