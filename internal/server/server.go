@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/FirePing32/harness-api/internal/agent"
+	"github.com/FirePing32/harness-api/internal/audit"
 	"github.com/FirePing32/harness-api/internal/config"
 	"github.com/FirePing32/harness-api/internal/contextmgr"
 	"github.com/FirePing32/harness-api/internal/guard"
@@ -22,6 +23,7 @@ type Server struct {
 	upstream *upstream.Client
 	sessions *workspace.Manager
 	agent    *agent.Loop
+	audit    *audit.Logger
 	mux      *http.ServeMux
 }
 
@@ -34,7 +36,7 @@ type Server struct {
 // bash is offered only when it is enabled. Registering it and having it refuse
 // every call would waste a slot in the model's attention and invite it to keep
 // trying; leaving it out means the model plans around the tools it has.
-func DefaultTools(cfg *config.Config) *tools.Registry {
+func DefaultTools(cfg *config.Config, auditLog *audit.Logger) *tools.Registry {
 	r := tools.NewRegistry(
 		tools.NewRead(),
 		tools.NewGlob(),
@@ -43,7 +45,8 @@ func DefaultTools(cfg *config.Config) *tools.Registry {
 		tools.NewWrite(),
 	)
 	if cfg.Shell.Enabled {
-		if err := r.Register(tools.NewBash(workspace.NewLocalShell(), cfg.Shell)); err != nil {
+		bash := tools.NewBash(workspace.NewLocalShell(), cfg.Shell).WithAudit(auditLog)
+		if err := r.Register(bash); err != nil {
 			panic(err)
 		}
 	}
@@ -82,6 +85,16 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	sessions, err := workspace.NewManager(cfg.Workspace, log)
 	if err != nil {
 		return nil, err
+	}
+
+	auditLog, err := audit.Open(cfg.Audit.Path, audit.ErrorReporter(log))
+	if err != nil {
+		// Refusing to start is right here. Auditing was asked for explicitly, and
+		// silently running without it is the one outcome nobody would want.
+		return nil, err
+	}
+	if auditLog.Enabled() {
+		log.Info("audit log open", "path", auditLog.Path())
 	}
 
 	guards, guardErrs := DefaultGuards(cfg)
@@ -139,13 +152,15 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		log:      log,
 		upstream: client,
 		sessions: sessions,
+		audit:    auditLog,
 		agent: agent.New(agent.Options{
 			Upstream:  client,
-			Registry:  DefaultTools(cfg),
+			Registry:  DefaultTools(cfg, auditLog),
 			Guards:    guards,
 			Compactor: compactor,
 			Config:    cfg.Agent,
 			Log:       log,
+			Audit:     auditLog,
 			Dialect:   tools.SchemaDialect(profile.SchemaDialect),
 		}),
 		mux: http.NewServeMux(),
@@ -153,6 +168,9 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	s.routes()
 	return s, nil
 }
+
+// Audit exposes the audit log so the entrypoint can close it at shutdown.
+func (s *Server) Audit() *audit.Logger { return s.audit }
 
 // Sessions exposes the session registry so the entrypoint can run the idle
 // sweeper and release workspaces at shutdown.

@@ -1,0 +1,8 @@
+{
+  "name": "long-horizon-compaction",
+  "category": "12-long-horizon",
+  "prompt": "Exactly one of the ten services under services/ declares a digest retention period as a constant. Find which service it is and what the value is, then write a file RETENTION.md containing two lines: the service name on the first line and the number of days on the second.",
+  "notes": "Ten files of roughly 900 lines each. Reading them one after another exceeds a small context window, so the run has to survive compaction — and compaction is what invalidates the observation ledger, which is what makes the final write need a re-check. This is the only task that exercises the prune-then-summarise path end to end against a real model.",
+  "max_turns": 30,
+  "timeout": "15m"
+}

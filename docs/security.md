@@ -87,6 +87,81 @@ requires a non-interactive shell without job control to set SIGINT to *ignored*
 in background children, so `something &` inside `bash -c` cannot be interrupted
 by SIGINT at all — bash dies and the child keeps running.
 
+### Resource ceilings
+
+| Bound | Default | Config key |
+|---|---|---|
+| Processor time | timeout x core count | `shell.cpu_factor` |
+| Single file size | 1 GiB | `shell.max_file_size_kb` |
+| Concurrent processes | off | `shell.max_processes` |
+
+Applied with the shell's own `ulimit`, through a wrapper that execs the real
+shell: `sh -c 'ulimit ...; exec "$0" "$@"' bash -c <command>`. The plan called
+for `setrlimit` via `SysProcAttr`, which does not exist — Go's `SysProcAttr`
+carries no rlimit fields on any unix and there is no pre-exec hook. The model's
+command stays a separate argv element, so it is never re-parsed and a syntax
+error still reports the line number the model would expect.
+
+These cannot be lifted by the command. Bash's bare `ulimit -t N` sets the soft
+and hard limits together, and lowering a hard limit is irreversible for a
+non-root process; a command that tries gets "Operation not permitted". There is
+a test asserting exactly that, because without it the mechanism would be
+decorative.
+
+**The processor-time ceiling is not a second wall clock.** At the default
+factor it is the most CPU time a command respecting its timeout could possibly
+use, so it never fires for well-behaved work. What it catches is a process that
+left its process group by double-forking and survived the group kill — an
+rlimit is inherited across fork and exec, so it follows the escapee, and
+nothing else here would ever stop it.
+
+**`max_processes` is off by default and that is a real gap.** `RLIMIT_NPROC`
+counts every process owned by the real user id, not the ones this command
+started, so a value chosen for a dedicated service account will refuse the
+first fork on a shared login that already has several hundred. A ceiling that
+turns every command into an inexplicable failure is worse than no ceiling: the
+model cannot tell a policy refusal from a bug, so it rephrases instead of
+adapting. Set it when the server has a user to itself.
+
+**Address space is not limited at all.** macOS rejects `ulimit -v` outright,
+and on Linux it breaks the Go toolchain and the JVM, both of which reserve
+large virtual mappings they never touch. Both were measured rather than assumed.
+
+A command killed by a ceiling exits 152 (SIGXCPU) or 153 (SIGXFSZ), and the
+tool result says in words which ceiling, what the value was, and that any file
+being written is truncated. A bare exit code there is indistinguishable from
+the command being wrong, and a model that reads it that way rewrites a command
+that was fine.
+
+### The audit log
+
+Off unless `audit.path` (or `-audit-log`) is set. When on, every shell command
+and every guard refusal is appended as one JSON object per line, flushed as it
+happens.
+
+It is deliberately separate from the operational log, which is levelled and
+routinely turned down to warn. A trail that disappears when someone quietens
+the logs is not a trail.
+
+| Recorded | |
+|---|---|
+| `command` | session, workspace, the command, workdir, exit code, duration, ceilings in force |
+| `denied` | session, tool, which guard, and the reason given to the model |
+
+**Commands are recorded verbatim, including any credentials in them.**
+`curl -H "Authorization: Bearer sk-..."` is a thing models write. Everywhere
+else in this server credentials are redacted in the log handler so that leaking
+one is not a possible mistake; here they are not, because a record of
+*approximately* what ran cannot answer the question an audit log exists to
+answer. The file is created `0600` and is as sensitive as whatever passes
+through those commands. Do not ship it to a log aggregator without thinking
+about what is in it.
+
+A failed audit write never fails the request that triggered it, and is reported
+once rather than on every subsequent command. Otherwise a full disk becomes an
+outage, and anyone who wanted the audit trail switched off would have a way to
+switch it off.
+
 ### Context compaction
 
 A conversation approaching the model's window is compacted rather than allowed
@@ -150,9 +225,11 @@ Read this list as a whole. Each item is a deliberate choice, not an oversight.
 the file tools and nothing else. The timeout and output cap are ergonomics —
 they stop a hung test suite and a runaway log — and they are not containment.
 
-**There is no resource limit on commands.** No CPU, memory, file-size or
-process-count ceiling. A fork bomb will do what a fork bomb does. (`setrlimit`
-is planned for a later phase and will narrow this, not close it.)
+**Memory is not limited, and neither is process count by default.** A fork bomb
+will do what a fork bomb does unless `shell.max_processes` is set, and nothing
+bounds resident memory at all. Processor time and file size *are* bounded — see
+[Resource ceilings](#resource-ceilings) — which narrows this rather than
+closing it.
 
 **There is no network restriction.** A command can reach anything the host can,
 including link-local metadata endpoints on a cloud instance.

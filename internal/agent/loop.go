@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FirePing32/harness-api/internal/audit"
 	"github.com/FirePing32/harness-api/internal/config"
 	"github.com/FirePing32/harness-api/internal/contextmgr"
 	"github.com/FirePing32/harness-api/internal/guard"
@@ -25,6 +26,7 @@ type Loop struct {
 	compactor *contextmgr.Compactor
 	cfg       config.Agent
 	log       *slog.Logger
+	audit     *audit.Logger
 
 	// dialect is how much JSON Schema the configured provider tolerates.
 	dialect tools.SchemaDialect
@@ -38,6 +40,7 @@ type Options struct {
 	Compactor *contextmgr.Compactor
 	Config    config.Agent
 	Log       *slog.Logger
+	Audit     *audit.Logger
 	Dialect   tools.SchemaDialect
 }
 
@@ -54,6 +57,7 @@ func New(opts Options) *Loop {
 		compactor: opts.Compactor,
 		cfg:       opts.Config,
 		log:       opts.Log,
+		audit:     opts.Audit,
 		dialect:   dialect,
 	}
 }
@@ -429,6 +433,9 @@ func (l *Loop) invoke(
 		l.log.Info("tool call denied",
 			"session_id", s.ID(), "tool", call.Function.Name,
 			"call_id", call.ID, "guard", by)
+		// A refusal is the record most worth keeping: it is the one event that
+		// says something tried to do what the guards exist to stop.
+		l.audit.Denied(s.ID(), call.Function.Name, by, reason)
 		emit.emit(Event{
 			Type: EventToolEnd, Turn: turn,
 			Tool: call.Function.Name, CallID: call.ID,

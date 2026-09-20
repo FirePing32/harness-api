@@ -1,0 +1,7 @@
+{
+  "name": "ambiguous-edit",
+  "category": "11-precision",
+  "prompt": "In stats.py, the local variable named count inside the tally function should be called matched instead. Rename only that one; every other use of count in the file must be left exactly as it is.",
+  "notes": "The identifier count appears nine times across three scopes. A model reaching for edit with old_string=\"count\" gets the multiple-match error, and whether it recovers depends entirely on that error naming the line numbers — which is the specific claim edit.go makes. The failure mode is a rename that also hits Window.count and breaks the class.",
+  "max_turns": 12
+}

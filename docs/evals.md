@@ -80,7 +80,9 @@ Each task directory holds:
 evals/tasks/<name>/
   task.json     the spec
   repo/         copied fresh into a workspace for every repetition
-  hidden/       files withheld from the agent, used by the checker
+  _hidden/      files withheld from the agent, used by the checker
+                (underscored so Go tooling skips it: a hidden Go test
+                 would otherwise compile as part of this module)
   check.sh      exit 0 to pass, 1 to fail, 99 if the check cannot run
 ```
 
@@ -210,7 +212,7 @@ green. `-min-pass-rate` exists for anyone who wants one anyway.
 
 ## The tasks
 
-Ten, one per category, chosen so that a failure localises.
+Eighteen, one per category, chosen so that a failure localises.
 
 | Task | Probes |
 |---|---|
@@ -224,8 +226,46 @@ Ten, one per category, chosen so that a failure localises.
 | `impossible-refusal` | Must report that the file does not exist, not invent it. |
 | `anti-destruction` | A broad destructive instruction next to irreplaceable files. |
 | `grep-discovery` | Nothing names the file, package or identifier. Search only. |
+| `ambiguous-edit` | One of nine uses of a name, across three scopes. |
+| `long-horizon-compaction` | Ten ~900-line files; the run must survive compaction. |
+| `nested-glob-discovery` | Ignore rules: three real matches, two under vendor trees. |
+| `build-test-fix-chain` | A panic, read from a stack trace rather than a compile error. |
+| `empty-file-handling` | An empty file is empty, not missing and not a failed read. |
+| `stale-after-shell` | A script rewrites a file underneath what was read. |
+| `no-op-detection` | Already correct. The answer is to say so and change nothing. |
+| `large-output-paging` | The one useful line sits at 2500 of 6000. |
 
-Three of them check for a *specific wrong answer* rather than merely the right
-one, so the failure message says what went wrong: `grep-discovery` names the
-decoy constant, `bash-dependent` detects a doctored input, `bug-fix-red-green`
-detects an edited test.
+The second eight were chosen to probe this harness's own claims rather than
+general agent ability, which is what makes the suite a regression detector for
+this project instead of a small generic benchmark:
+
+- `ambiguous-edit` is the only task that forces `edit`'s multiple-match error,
+  so it measures whether naming the line numbers actually helps.
+- `stale-after-shell` is the content-hash ledger, and nothing else reaches it:
+  a boolean read-before-edit flag passes every other task in the suite.
+- `long-horizon-compaction` is the only end-to-end exercise of prune-then-
+  summarise, and of the ledger invalidation that follows it.
+- `large-output-paging` is the only one that needs the spill file, so it
+  measures whether the truncation footer leads anywhere.
+- `nested-glob-discovery` is the only one that checks the ignore rules.
+- `no-op-detection` and `impossible-refusal` both reward doing less than asked,
+  which is the direction models are least trained toward.
+
+Six check for a *specific wrong answer* rather than merely the right one, so a
+failure says what went wrong instead of only that it did: `grep-discovery`
+names the decoy constant, `nested-glob-discovery` names the ignored trees,
+`bash-dependent` detects a doctored input, `bug-fix-red-green` detects an
+edited test, `stale-after-shell` detects a file rebuilt from memory, and
+`large-output-paging` distinguishes finding the package from finding the pin.
+
+### Why eighteen and not the thirty the plan called for
+
+More tasks buy statistical power, and power is the binding constraint on the
+comparison — so the number does matter. But twelve tasks that duplicate what
+the first eighteen already cover buy far less than the count suggests, while
+costing real money on every run.
+
+The honest position is that the next twelve should be chosen from observed
+failures rather than guessed in advance. A task written because a real run went
+wrong in a way the suite did not catch is worth several written because the
+category table had a gap in it.

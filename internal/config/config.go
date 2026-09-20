@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,7 @@ type Config struct {
 	Shell     Shell     `json:"shell"`
 	Guards    Guards    `json:"guards"`
 	Context   Context   `json:"context"`
+	Audit     Audit     `json:"audit"`
 	Log       Log       `json:"log"`
 }
 
@@ -144,6 +146,34 @@ type Shell struct {
 	// SpillBytes caps the overflow file written when output exceeds TailBytes.
 	// Zero disables spilling, and the extra output is simply lost.
 	SpillBytes int `json:"spill_bytes"`
+
+	// MaxFileSizeKB bounds any single file a command writes. The output cap
+	// protects what comes back into the conversation and does nothing about
+	// `yes > junk`, which fills the disk and takes the machine down with it.
+	// Zero disables the ceiling.
+	MaxFileSizeKB int `json:"max_file_size_kb"`
+
+	// MaxProcesses bounds concurrent processes, and is off by default.
+	//
+	// RLIMIT_NPROC counts every process belonging to the real user id, not the
+	// ones this command started. A value picked for a dedicated service
+	// account will refuse the first fork on a shared login that already has
+	// several hundred, and a limit that turns every command into an
+	// inexplicable failure is worse than no limit at all. Set it when the
+	// server has a user to itself, which docs/security.md recommends anyway.
+	MaxProcesses int `json:"max_processes"`
+
+	// CPUFactor sets the processor-time ceiling as a multiple of the command's
+	// timeout. Zero disables it.
+	//
+	// The default is the machine's core count, which is the most CPU time a
+	// command respecting its wall clock could consume — so the ceiling never
+	// fires for well-behaved work. What it catches is a process that left its
+	// process group by double-forking and survived the group kill, which
+	// nothing else here would ever stop. A false positive would be worse than
+	// a miss: the model cannot tell a policy refusal from a bug, so it rephrases
+	// and retries instead of adapting.
+	CPUFactor int `json:"cpu_factor"`
 }
 
 // Context governs keeping a conversation inside the model's window.
@@ -160,6 +190,18 @@ type Context struct {
 	// profile's value; if that is also zero, compaction is disabled, because
 	// guessing a window would be worse than doing nothing.
 	Window int `json:"window"`
+}
+
+// Audit configures the security-relevant record of what the server did.
+//
+// It is separate from Log on purpose: the operational log is levelled and
+// routinely turned down, and a trail that disappears when someone quietens the
+// logs is not a trail. Empty Path disables it.
+type Audit struct {
+	// Path is the file to append JSON-lines events to. The file holds shell
+	// commands verbatim, so it is created 0600 and is as sensitive as whatever
+	// passes through those commands.
+	Path string `json:"path"`
 }
 
 // Guards configures the checks applied to a tool call before it runs.
@@ -216,6 +258,9 @@ func Default() Config {
 			MaxTimeout:     Duration(10 * time.Minute),
 			TailBytes:      30 << 10,
 			SpillBytes:     5 << 20,
+			MaxFileSizeKB:  1 << 20, // 1 GiB: larger than any build artifact a task needs
+			MaxProcesses:   0,       // off; see the field comment
+			CPUFactor:      runtime.NumCPU(),
 		},
 		Context: Context{
 			Enabled:   true,
@@ -331,6 +376,7 @@ func (c *Config) ApplyEnv() error {
 		return err
 	}
 
+	str("HARNESS_AUDIT_PATH", &c.Audit.Path)
 	str("HARNESS_LOG_LEVEL", &c.Log.Level)
 	str("HARNESS_LOG_FORMAT", &c.Log.Format)
 	return nil

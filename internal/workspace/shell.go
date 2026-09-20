@@ -51,6 +51,10 @@ type ShellRequest struct {
 
 	// Env replaces the environment when non-nil.
 	Env []string
+
+	// Limits are the resource ceilings for this command. The zero value
+	// applies none, which is what every caller got before these existed.
+	Limits Limits
 }
 
 // ShellResult is what a command produced.
@@ -159,7 +163,8 @@ func (s *LocalShell) Run(ctx context.Context, req ShellRequest) (*ShellResult, e
 		out = io.MultiWriter(tail, req.Spill)
 	}
 
-	cmd := exec.Command("bash", "-c", req.Command)
+	argv := req.Limits.Argv(req.Command)
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = req.Dir
 	if req.Env != nil {
 		cmd.Env = req.Env
@@ -193,9 +198,17 @@ func (s *LocalShell) Run(ctx context.Context, req ShellRequest) (*ShellResult, e
 	case errors.As(waitErr, &exitErr):
 		result.ExitCode = exitErr.ExitCode()
 		if result.ExitCode < 0 {
-			// Killed by a signal. Shells report this as 128 + signal number;
-			// matching that keeps the number meaningful to the model.
-			result.ExitCode = 137
+			// Killed by a signal, which Go collapses to -1. Recover the signal
+			// and report it as a shell does, 128 + signal number.
+			//
+			// This used to be a hardcoded 137 under a comment claiming it was
+			// 128 + the signal, which made every signal death look like the
+			// timeout sweep. A resource ceiling and a segfault are not the same
+			// event and do not call for the same response.
+			result.ExitCode = signalExitCode(exitErr.ProcessState)
+			if result.ExitCode == 0 {
+				result.ExitCode = 137
+			}
 		}
 	default:
 		return nil, waitErr

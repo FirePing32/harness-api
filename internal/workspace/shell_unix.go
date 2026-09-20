@@ -28,6 +28,25 @@ func setProcessGroup(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 }
 
+// signalExitCode renders a signal death the way a shell does, as 128 plus the
+// signal number, or 0 if the process did not die from a signal.
+//
+// Go collapses every signal death to ExitCode() == -1. Reporting them all as
+// one number discards the only thing that says *why* a command was killed:
+// SIGKILL (137) is the timeout sweep, SIGXCPU (152) is the processor ceiling,
+// SIGXFSZ (153) is the file size ceiling, SIGSEGV (139) is the command itself
+// crashing. Those call for four different responses from the model.
+func signalExitCode(state *os.ProcessState) int {
+	if state == nil {
+		return 0
+	}
+	status, ok := state.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() {
+		return 0
+	}
+	return 128 + int(status.Signal())
+}
+
 // signalGroup sends sig to the command's entire process group.
 //
 // The negative pid is the whole point: syscall.Kill with a negative value

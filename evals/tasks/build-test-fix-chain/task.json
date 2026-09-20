@@ -1,0 +1,7 @@
+{
+  "name": "build-test-fix-chain",
+  "category": "14-chain",
+  "prompt": "The test in this Go module panics. Make it pass without changing the test or weakening what Total promises.",
+  "notes": "ParseRow indexes parts[1] without checking the split produced two parts, so a row with no colon panics rather than returning an error, and Total's skip-malformed path never runs. The fix needs the panic understood from a stack trace rather than a compile error, which is a different reading task from build-error.",
+  "max_turns": 16
+}

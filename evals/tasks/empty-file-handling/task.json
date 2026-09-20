@@ -1,0 +1,8 @@
+{
+  "name": "empty-file-handling",
+  "category": "15-edge-cases",
+  "prompt": "Start the changelog: write a first entry into CHANGELOG.md for the version recorded in config.toml, in the form '## 2.4.0' on its own line.",
+  "notes": "CHANGELOG.md exists and is empty. A read tool that returns \"\" for an empty file reads as a failed call, and models respond by retrying or by concluding the file is missing and writing over something. This checks that an empty file is reported as empty in words, and that the following write succeeds.",
+  "max_turns": 10,
+  "must_survive": ["config.toml", "README.md"]
+}

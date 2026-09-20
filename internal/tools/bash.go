@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FirePing32/harness-api/internal/audit"
 	"github.com/FirePing32/harness-api/internal/config"
 	"github.com/FirePing32/harness-api/internal/workspace"
 )
@@ -22,11 +23,22 @@ import (
 type Bash struct {
 	shell workspace.Shell
 	cfg   config.Shell
+
+	// audit records what ran. A nil Logger discards, which is the default and
+	// is why nothing here checks it.
+	audit *audit.Logger
 }
 
 // NewBash builds the bash tool.
 func NewBash(shell workspace.Shell, cfg config.Shell) *Bash {
 	return &Bash{shell: shell, cfg: cfg}
+}
+
+// WithAudit returns a copy that records every command it runs.
+func (b *Bash) WithAudit(log *audit.Logger) *Bash {
+	out := *b
+	out.audit = log
+	return &out
 }
 
 func (*Bash) Name() string { return "bash" }
@@ -97,7 +109,13 @@ type BashResult struct {
 	TotalBytes int    `json:"total_bytes"`
 	// SpillPath, when set, is a workspace-relative file holding the complete
 	// output, so the model can page through what the tail left out.
-	SpillPath  string        `json:"spill_path,omitempty"`
+	SpillPath string `json:"spill_path,omitempty"`
+
+	// LimitNote explains an exit code the kernel produced by enforcing a
+	// resource ceiling. Without it the model sees exit 153 and a truncated
+	// file with nothing connecting the two, so it retries the same command.
+	LimitNote string `json:"limit_note,omitempty"`
+
 	DurationMS int64         `json:"duration_ms"`
 	timeout    time.Duration // for rendering, not serialised
 }
@@ -152,12 +170,15 @@ func (b *Bash) Execute(ctx context.Context, s *workspace.Session, raw json.RawMe
 	spill := newSpillFile(s, b.cfg.TailBytes, b.cfg.SpillBytes)
 	defer spill.Close()
 
+	limits := b.limits(timeout)
+
 	res, err := b.shell.Run(ctx, workspace.ShellRequest{
 		Command:   args.Command,
 		Dir:       dir,
 		Timeout:   timeout,
 		TailBytes: b.cfg.TailBytes,
 		Spill:     spill,
+		Limits:    limits,
 	})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -168,6 +189,9 @@ func (b *Bash) Execute(ctx context.Context, s *workspace.Session, raw json.RawMe
 		}
 		return nil, Errorf(CodeIO, "could not run the command: %s", err)
 	}
+
+	b.audit.Command(s.ID(), s.Root(), args.Command, displayDir,
+		res.ExitCode, res.TimedOut, res.Duration, limits.Describe())
 
 	// Nothing is done to the observation ledger here, deliberately. A command
 	// that rewrote a file the model had read will be caught by the content hash
@@ -185,11 +209,33 @@ func (b *Bash) Execute(ctx context.Context, s *workspace.Session, raw json.RawMe
 		TotalBytes: res.TotalBytes,
 		DurationMS: res.Duration.Milliseconds(),
 		timeout:    timeout,
+		LimitNote:  limits.ExplainExit(res.ExitCode),
 	}
 	if res.Truncated {
 		out.SpillPath = spill.Path()
 	}
 	return out, nil
+}
+
+// limits derives this command's resource ceilings.
+//
+// The processor-time ceiling scales with the timeout rather than being a fixed
+// number, so that lowering the timeout tightens it automatically and the two
+// cannot drift apart. At the default factor — one core-second per wall-second
+// per core — it is unreachable by anything that respects its wall clock.
+func (b *Bash) limits(timeout time.Duration) workspace.Limits {
+	limits := workspace.Limits{
+		FileSizeKB: b.cfg.MaxFileSizeKB,
+		Processes:  b.cfg.MaxProcesses,
+	}
+	if b.cfg.CPUFactor > 0 {
+		seconds := int(timeout.Seconds())
+		if seconds < 1 {
+			seconds = 1
+		}
+		limits.CPUSeconds = seconds * b.cfg.CPUFactor
+	}
+	return limits
 }
 
 func (*Bash) Render(_ json.RawMessage, result any) string {
@@ -226,6 +272,11 @@ func (*Bash) Render(_ json.RawMessage, result any) string {
 				"everything it had started. It did not fail — it did not finish. "+
 				"Raise timeout_seconds, or narrow the command so it does less.",
 			r.timeout.Round(time.Second)))
+	case r.LimitNote != "":
+		// Same reasoning as the timeout case: a bare exit code from a resource
+		// ceiling is indistinguishable from the command being wrong, and a
+		// model that reads it that way rewrites a command that was fine.
+		notes = append(notes, fmt.Sprintf("Exit code: %d. %s", r.ExitCode, r.LimitNote))
 	case r.ExitCode != 0:
 		notes = append(notes, fmt.Sprintf("Exit code: %d", r.ExitCode))
 	}

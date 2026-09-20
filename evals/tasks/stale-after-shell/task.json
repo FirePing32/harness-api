@@ -1,0 +1,8 @@
+{
+  "name": "stale-after-shell",
+  "category": "16-staleness",
+  "prompt": "version.txt is stale. Regenerate it by running ./generate.sh, then append a line 'channel=stable' to the regenerated file.",
+  "notes": "The script rewrites version.txt underneath whatever the agent read. If it read the file first, the observation is invalidated by the content hash and the append is refused until it re-reads — the exact scenario a boolean read-before-edit flag cannot catch. The correct recovery is one re-read; the failure is appending to remembered contents and losing what the script generated.",
+  "max_turns": 12,
+  "must_survive": ["generate.sh", "config.toml"]
+}

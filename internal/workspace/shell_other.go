@@ -24,3 +24,6 @@ func signalGroup(cmd *exec.Cmd, sig os.Signal) {
 		_ = cmd.Process.Signal(sig)
 	}
 }
+
+// signalExitCode has no meaning here: Windows has no wait-status signals.
+func signalExitCode(*os.ProcessState) int { return 0 }

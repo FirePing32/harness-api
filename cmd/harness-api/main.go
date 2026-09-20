@@ -36,6 +36,7 @@ func run(args []string) error {
 		workspaceRoot    string
 		logLevel         string
 		logFormat        string
+		auditPath        string
 	)
 
 	fs.StringVar(&configPath, "config", os.Getenv("HARNESS_CONFIG"), "path to a JSON config file")
@@ -46,6 +47,8 @@ func run(args []string) error {
 	fs.StringVar(&model, "upstream-model", "", "default upstream model")
 	fs.StringVar(&profile, "upstream-profile", "", "provider quirk profile name")
 	fs.StringVar(&workspaceRoot, "workspace-root", "", "parent directory for ephemeral workspaces")
+	fs.StringVar(&auditPath, "audit-log", "",
+		"append a JSON-lines record of every command and refusal to this file")
 	fs.StringVar(&logLevel, "log-level", "", "debug|info|warn|error")
 	fs.StringVar(&logFormat, "log-format", "", "json|text")
 
@@ -79,6 +82,8 @@ func run(args []string) error {
 			cfg.Upstream.Profile = profile
 		case "workspace-root":
 			cfg.Workspace.Root = workspaceRoot
+		case "audit-log":
+			cfg.Audit.Path = auditPath
 		case "log-level":
 			cfg.Log.Level = logLevel
 		case "log-format":
@@ -161,6 +166,11 @@ func run(args []string) error {
 	// out from under it.
 	if err := srv.Sessions().Close(); err != nil {
 		log.Error("releasing workspaces", "error", err)
+	}
+
+	// Last, so that anything the drain above audited is on disk.
+	if err := srv.Audit().Close(); err != nil {
+		log.Error("closing the audit log", "error", err)
 	}
 
 	log.Info("shutdown complete")

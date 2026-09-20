@@ -1,0 +1,7 @@
+{
+  "name": "nested-glob-discovery",
+  "category": "13-discovery",
+  "prompt": "Count the *.config.json files that belong to this project and write just that number into COUNT.txt. Files under directories this project ignores do not belong to it.",
+  "notes": "Three of the five matching files are real; the other two sit under vendor/ and node_modules/, both named in .gitignore. This is the only task that checks the ignore rules are applied, and the wrong answer is 5 rather than an error — which is why the checker names it.",
+  "max_turns": 10
+}

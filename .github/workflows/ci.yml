@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Both, deliberately. Half of what this project does is syscall-shaped —
+    # os.Root, process groups, signal semantics, rlimits — and those are exactly
+    # the things that behave differently on the two platforms. The SIGINT
+    # finding in phase 5 and the /var-to-/private/var finding in phase 10 were
+    # both platform behaviour that a single-OS matrix would have shipped.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l ./internal ./cmd)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: vet
+        run: go vet ./...
+
+      # Non-negotiable. The parallel tool execution, the session mutex, the
+      # estimator and the audit log are all reachable from several goroutines
+      # at once, and every one of those has a test that only means something
+      # under -race.
+      - name: test
+        run: go test -race -timeout 15m ./...
+
+      # Checks the checkers without a model. The dangerous direction — a checker
+      # that passes an untouched repo — is covered by go test above; this is the
+      # other one, that each checker accepts a real solution and rejects the
+      # near-miss it exists to catch.
+      - name: eval fixtures
+        run: ./evals/verify-checkers.sh
+
+      - name: build
+        run: |
+          go build ./cmd/harness-api
+          go build ./cmd/harness-eval
+
+  # The eval suite itself is not here. It needs a model, it costs money, and it
+  # is stochastic — gating a build on it would fail builds for no reason and
+  # train everyone to re-run until green. Run it deliberately, compare two
+  # reports, and read the p-value.

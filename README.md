@@ -4,13 +4,16 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: feature-complete and measurable, but not yet measured.** Phases
-> 0–10 of 11 are done: the full core tool set (`read`, `glob`, `grep`, `edit`,
-> `write`, `bash`), streaming, persistent sessions, tool guards, provider quirk
-> profiles, context compaction, and an eval harness with ten programmatically
-> checked tasks. The harness is verified end to end against a scripted model;
-> **no numbers against a real model are published here yet**, so the capability
-> claims below remain arguments from design. See [Evaluation](#evaluation).
+> **Status: complete, and still unmeasured.** All eleven phases are done: the
+> core tool set (`read`, `glob`, `grep`, `edit`, `write`, `bash`), streaming,
+> persistent sessions, tool guards, provider quirk profiles, context
+> compaction, resource ceilings, an audit log, and an eval harness with
+> eighteen programmatically checked tasks. Everything is verified end to end
+> against a scripted model and under `-race` on Linux and macOS. **No numbers
+> against a real model are published here**, so the capability claims below are
+> still arguments from design rather than measurements — the suite exists to
+> settle them, and nobody has run it in anger yet. See
+> [Evaluation](#evaluation).
 
 ## Why
 
@@ -166,6 +169,7 @@ A flag left at its zero value does not clobber a value set by file or env.
 | `-upstream-model` | Default model when a request does not name one. |
 | `-workspace-root` | Parent directory for ephemeral workspaces. |
 | `HARNESS_SHELL_ENABLED=false` | Env only. Drops `bash`, keeping the jailed file tools. |
+| `-audit-log` | Append every command and refusal to this file. Off by default. |
 | `-log-level` / `-log-format` | `debug\|info\|warn\|error`, `json\|text`. |
 
 ## Security
@@ -197,6 +201,11 @@ not contain an adversary.
 - Tool calls pass through a deny-only guard chain: repeated identical calls,
   a destructive-command denylist, and commands that cannot finish in the time
   left. The denylist catches accidents, not adversaries.
+- Commands run under processor-time and file-size ceilings that they cannot
+  lift. Memory and process count are *not* bounded by default; the reasons are
+  in [docs/security.md](docs/security.md) and they are not good news.
+- `-audit-log` records every command and refusal, separately from the
+  operational log so that quietening one does not lose the other.
 
 ## Evaluation
 
@@ -207,7 +216,7 @@ harness-eval run -model gpt-4.1 -label baseline -out baseline.json
 harness-eval compare baseline.json candidate.json
 ```
 
-Ten tasks, three repetitions each, checked by programs rather than by an LLM
+Eighteen tasks, three repetitions each, checked by programs rather than by an LLM
 judge — judges disagree with themselves across runs, and a regression detector
 that is itself noisy detects noise. Tracked: pass@1, mean turns to success,
 tokens per task, and **tool error rate per tool**. That last one is the direct
@@ -288,6 +297,15 @@ for a request whose byte count is known exactly — a free labelled sample — s
 byte ratio converges on the real tokenizer within a few turns, for any
 tokenizer, with no dependency.
 
+**Resource ceilings are applied with `ulimit`, not `setrlimit`.** Go's
+`SysProcAttr` has no rlimit fields on any unix and there is no pre-exec hook, so
+the plan's approach did not exist. A wrapper that sets the limits and then
+`exec`s the real shell keeps the model's command as a separate argv element, so
+it is never re-parsed and a syntax error still reports the line number the model
+expects. Bash's bare `ulimit -t N` sets soft and hard together, which makes the
+ceiling one-way — there is a test asserting a command cannot raise it, because
+without that the whole mechanism would be decorative.
+
 **Guards can only deny, never permit.** An allow result would make the outcome
 depend on registration order, and every new guard would have to be reasoned
 about against every existing one. Deny-only makes the chain monotonic: adding
@@ -297,10 +315,17 @@ a guard can only make the system more restrictive, and ordering affects which
 ## Development
 
 ```sh
-go test -race ./...     # required; the concurrency design depends on it
+go test -race ./...          # required; the concurrency design depends on it
 go vet ./...
 gofmt -l ./internal ./cmd
+./evals/verify-checkers.sh   # the eval fixtures, no model needed
 ```
+
+CI runs all four on Linux *and* macOS. Both, deliberately: half of what this
+project does is syscall-shaped — `os.Root`, process groups, signal semantics,
+rlimits — and those are exactly the things that differ between the two. The
+SIGINT finding in phase 5 and the `/var`-to-`/private/var` one in phase 10 were
+both platform behaviour a single-OS matrix would have shipped.
 
 ## Roadmap
 
@@ -317,7 +342,7 @@ gofmt -l ./internal ./cmd
 | 8 | Provider quirk profiles and autodetect | done |
 | 9 | Context compaction and token estimation | done |
 | 10 | Eval harness with programmatic checkers | done |
-| 11 | Hardening, rlimits, audit log, full 30-task suite | next |
+| 11 | Resource ceilings, audit log, CI, suite expansion | done |
 
 ## Dependencies
 

@@ -1,0 +1,8 @@
+{
+  "name": "large-output-paging",
+  "category": "18-paging",
+  "prompt": "Run ./build.sh. It prints one WARNING naming a deprecated dependency and the version to pin. Write that pin requirement, exactly as the warning states it, into PIN.txt.",
+  "notes": "Six thousand lines of output with the one useful line at 2500, so it survives neither head- nor tail-truncation and has to be recovered from the spill file. This is the only task exercising the spill path and the instruction that points at it; a harness that truncates without saying where the rest went loses this outright.",
+  "max_turns": 12,
+  "must_survive": ["build.sh"]
+}

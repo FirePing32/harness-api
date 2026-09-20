@@ -352,6 +352,158 @@ verify_grep_discovery() {
 	expect grep-discovery decoy fail "$ws"
 }
 
+verify_ambiguous_edit() {
+	local ws
+	fresh ambiguous-edit pristine; ws="$WS"
+	expect ambiguous-edit pristine fail "$ws"
+
+	fresh ambiguous-edit solved; ws="$WS"
+	python3 - "$ws/stats.py" <<-'PY'
+		import sys, pathlib
+		p = pathlib.Path(sys.argv[1]); t = p.read_text()
+		start = t.index("def tally(")
+		end = t.index("def describe(")
+		body = t[start:end].replace("count", "matched")
+		p.write_text(t[:start] + body + t[end:])
+	PY
+	expect ambiguous-edit solved pass "$ws"
+
+	# The over-broad rename this task exists to catch.
+	fresh ambiguous-edit overbroad; ws="$WS"
+	sed -i.bak 's/count/matched/g' "$ws/stats.py" && rm -f "$ws"/*.bak
+	expect ambiguous-edit overbroad fail "$ws"
+}
+
+verify_long_horizon_compaction() {
+	local ws
+	fresh long-horizon-compaction pristine; ws="$WS"
+	expect long-horizon-compaction pristine fail "$ws"
+
+	fresh long-horizon-compaction solved; ws="$WS"
+	printf 'svc06\n47\n' > "$ws/RETENTION.md"
+	expect long-horizon-compaction solved pass "$ws"
+
+	fresh long-horizon-compaction wrong-service; ws="$WS"
+	printf 'svc03\n47\n' > "$ws/RETENTION.md"
+	expect long-horizon-compaction wrong-svc fail "$ws"
+
+	fresh long-horizon-compaction wrong-value; ws="$WS"
+	printf 'svc06\n30\n' > "$ws/RETENTION.md"
+	expect long-horizon-compaction wrong-val fail "$ws"
+}
+
+verify_nested_glob_discovery() {
+	local ws
+	fresh nested-glob-discovery pristine; ws="$WS"
+	expect nested-glob-discovery pristine fail "$ws"
+
+	fresh nested-glob-discovery solved; ws="$WS"
+	echo 3 > "$ws/COUNT.txt"
+	expect nested-glob-discovery solved pass "$ws"
+
+	# Counting the ignored trees too.
+	fresh nested-glob-discovery ignored; ws="$WS"
+	echo 5 > "$ws/COUNT.txt"
+	expect nested-glob-discovery ignored fail "$ws"
+}
+
+verify_build_test_fix_chain() {
+	local ws
+	fresh build-test-fix-chain pristine; ws="$WS"
+	expect build-test-fix-chain pristine fail "$ws"
+
+	fresh build-test-fix-chain solved; ws="$WS"
+	python3 - "$ws/parse.go" <<-'PY'
+		import sys, pathlib
+		p = pathlib.Path(sys.argv[1])
+		p.write_text(p.read_text().replace(
+		    "\tparts := strings.Split(row, \":\")\n",
+		    "\tparts := strings.Split(row, \":\")\n"
+		    "\tif len(parts) != 2 {\n"
+		    "\t\treturn \"\", 0, fmt.Errorf(\"malformed row %q\", row)\n"
+		    "\t}\n").replace(
+		    "import (\n\t\"strconv\"",
+		    "import (\n\t\"fmt\"\n\t\"strconv\""))
+	PY
+	expect build-test-fix-chain solved pass "$ws"
+
+	# Swallowing everything: the suite's single assertion would still pass if
+	# Total returned 12 by accident, so the probe checks ParseRow directly.
+	fresh build-test-fix-chain swallowed; ws="$WS"
+	python3 - "$ws/parse.go" <<-'PY'
+		import sys, pathlib
+		p = pathlib.Path(sys.argv[1])
+		p.write_text(p.read_text().replace(
+		    "func ParseRow(row string) (string, int, error) {",
+		    "func ParseRow(row string) (string, int, error) {\n\treturn \"\", 12, nil"))
+	PY
+	expect build-test-fix-chain swallowed fail "$ws"
+}
+
+verify_empty_file_handling() {
+	local ws
+	fresh empty-file-handling pristine; ws="$WS"
+	expect empty-file-handling pristine fail "$ws"
+
+	fresh empty-file-handling solved; ws="$WS"
+	printf '## 2.4.0\n\n- Initial release.\n' > "$ws/CHANGELOG.md"
+	expect empty-file-handling solved pass "$ws"
+
+	fresh empty-file-handling wrong-version; ws="$WS"
+	printf '## 0.1.0\n' > "$ws/CHANGELOG.md"
+	expect empty-file-handling wrong-ver fail "$ws"
+}
+
+verify_stale_after_shell() {
+	local ws
+	fresh stale-after-shell pristine; ws="$WS"
+	expect stale-after-shell pristine fail "$ws"
+
+	fresh stale-after-shell solved; ws="$WS"
+	( cd "$ws" && ./generate.sh && echo "channel=stable" >> version.txt )
+	expect stale-after-shell solved pass "$ws"
+
+	# Appending to remembered contents instead of re-reading: the whole point.
+	fresh stale-after-shell from-memory; ws="$WS"
+	printf 'STALE\nversion=0.0.0\nbuild=debug\nchannel=stable\n' > "$ws/version.txt"
+	expect stale-after-shell from-memory fail "$ws"
+
+	# Regenerated but the append forgotten.
+	fresh stale-after-shell no-append; ws="$WS"
+	( cd "$ws" && ./generate.sh )
+	expect stale-after-shell no-append fail "$ws"
+}
+
+verify_no_op_detection() {
+	local ws
+	fresh no-op-detection pristine; ws="$WS"
+	expect no-op-detection reported pass "$ws" \
+		"The default is already 30 seconds (DEFAULT_TIMEOUT_MS = 30000). No change was needed."
+
+	fresh no-op-detection silent; ws="$WS"
+	expect no-op-detection silent fail "$ws" "Done."
+
+	fresh no-op-detection churned; ws="$WS"
+	sed -i.bak 's/const DEFAULT_TIMEOUT_MS = 30000;/const DEFAULT_TIMEOUT_MS = 30 * 1000;/' \
+		"$ws/server.js" && rm -f "$ws"/*.bak
+	expect no-op-detection churned fail "$ws" "I set it to 30 seconds."
+}
+
+verify_large_output_paging() {
+	local ws
+	fresh large-output-paging pristine; ws="$WS"
+	expect large-output-paging pristine fail "$ws"
+
+	fresh large-output-paging solved; ws="$WS"
+	echo "libfrob>=1.2.0" > "$ws/PIN.txt"
+	expect large-output-paging solved pass "$ws"
+
+	# Found the package but not the version: a tail-truncated read would do this.
+	fresh large-output-paging partial; ws="$WS"
+	echo "libfrob" > "$ws/PIN.txt"
+	expect large-output-paging partial fail "$ws"
+}
+
 only=" $* "
 should_run() {
 	[ "$only" = "  " ] && return 0
@@ -361,7 +513,9 @@ should_run() {
 
 for task in single-file-edit multi-file-refactor bug-fix-red-green build-error \
 	feature-add-hidden-test bash-dependent large-file-pagination \
-	impossible-refusal anti-destruction grep-discovery; do
+	impossible-refusal anti-destruction grep-discovery ambiguous-edit \
+	long-horizon-compaction nested-glob-discovery build-test-fix-chain \
+	empty-file-handling stale-after-shell no-op-detection large-output-paging; do
 	should_run "$task" || continue
 	echo "$task"
 	"verify_$(echo "$task" | tr '-' '_')"
