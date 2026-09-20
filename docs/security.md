@@ -109,16 +109,14 @@ mechanism would be decorative.
 
 The wrapper is `bash` rather than `sh`, which is load-bearing. `ulimit -f`
 counts blocks and the block size is shell-dependent — bash uses 1024 bytes,
-dash uses 512. With `/bin/sh` as the wrapper on a system where that is dash,
-the limit was set in one unit and enforced against a command reading the other,
-so **every file-size ceiling was applied at half its configured value**. CI on
-Ubuntu found it; macOS never would have.
+dash uses 512 — so setting the limit in one shell and running the command in
+another enforces a different number than was configured. Setting and running in
+the same shell removes the ambiguity.
 
 The processor-time ceiling sets the soft limit below the hard one rather than
 both together. With them equal, Linux delivers SIGXCPU and SIGKILL in the same
-instant and the wait status reports the SIGKILL — which is the same code as the
-timeout sweep, leaving nothing able to tell a processor-time kill from a
-timeout. macOS reported SIGXCPU either way, so this was also a CI finding.
+instant and the wait status reports the SIGKILL — the same code as the timeout
+sweep, leaving nothing able to tell a processor-time kill from a timeout.
 
 **The processor-time ceiling is not a second wall clock.** At the default
 factor it is the most CPU time a command respecting its timeout could possibly
@@ -137,7 +135,7 @@ adapting. Set it when the server has a user to itself.
 
 **Address space is not limited at all.** macOS rejects `ulimit -v` outright,
 and on Linux it breaks the Go toolchain and the JVM, both of which reserve
-large virtual mappings they never touch. Both were measured rather than assumed.
+large virtual mappings they never touch.
 
 A command killed by a ceiling exits 152 (SIGXCPU) or 153 (SIGXFSZ), and the
 tool result says in words which ceiling, what the value was, and that any file
@@ -221,23 +219,19 @@ list, `[]` disables the check) or turn the whole chain off with
 - The upstream API key is never logged. Redaction happens in the `slog`
   handler, so omitting it at a call site is not a possible mistake.
 - Upstream error bodies **are** relayed to clients for 4xx statuses, after
-  being credential-scrubbed by `logx.Redact`. An earlier version of this
-  document claimed they were never relayed, which was a stronger promise than
-  the code makes and the wrong kind of error in a security note: it invites
-  the reader to stop asking whether the scrubbing is good enough.
+  being credential-scrubbed by `logx.Redact`. They are relayed because a
+  provider saying "unknown model" or "unsupported parameter" is the most useful
+  thing available to whoever has to fix it.
 
-  The reason they are relayed is that a provider saying "unknown model" or
-  "unsupported parameter" is the most useful thing available to whoever has to
-  fix it. The scrubbing is a regex over `sk-…`, `Bearer …` and
-  `api_key`/`token` values, and it is what stands between a provider that
-  reflects the request — Authorization header included, which several do — and
-  a client that should not see it. Treat it as the load-bearing control it is.
+  The scrubbing is a regex over `sk-…`, `Bearer …` and `api_key`/`token`
+  values, and it is what stands between a provider that reflects the request —
+  Authorization header included, which several do — and a client that should
+  not see it. Treat it as the load-bearing control it is, and do not assume
+  these bodies are withheld.
 - Statuses that mean **this server's account is the problem** are replaced
   entirely rather than relayed: 401 and 403 (credentials), and 402 (billing).
   All three become 502. Passing them through would tell the caller to fix their
-  own token or their own request, which is the opposite of the truth — the 402
-  case was found by pointing the server at a real account that had run out of
-  credit, and it was arriving as a 400 "invalid request".
+  own token or their own request, which is the opposite of the truth.
 - Failed authentication is logged at warn with the path and remote address,
   but never the token presented: a near-miss would put a credential in a log
   file, and a wrong guess is still somebody's real password somewhere else.

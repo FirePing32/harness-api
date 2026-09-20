@@ -4,19 +4,6 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: built, and now in first contact with a real model.** All eleven
-> phases are done: the core tool set (`read`, `glob`, `grep`, `edit`, `write`,
-> `bash`), streaming, persistent sessions, tool guards, provider quirk
-> profiles, context compaction, resource ceilings, an audit log, and an eval
-> harness with eighteen programmatically checked tasks. It runs end to end
-> against a live provider, and under `-race` on Linux and macOS.
->
-> **There are still no suite numbers here.** Individual runs work; the full
-> suite has not been run to completion, so every capability claim below remains
-> an argument from design. What the first real runs did produce is
-> [two corrections to this design](#what-first-contact-changed), which is the
-> more useful early return.
-
 ## Why
 
 Agentic capability is dominated by the model. A harness cannot make a weak model
@@ -206,8 +193,8 @@ not contain an adversary.
   a destructive-command denylist, and commands that cannot finish in the time
   left. The denylist catches accidents, not adversaries.
 - Commands run under processor-time and file-size ceilings that they cannot
-  lift. Memory and process count are *not* bounded by default; the reasons are
-  in [docs/security.md](docs/security.md) and they are not good news.
+  lift. Memory is not bounded at all, and process count is not bounded by
+  default; [docs/security.md](docs/security.md) explains why and what to set.
 - `-audit-log` records every command and refusal, separately from the
   operational log so that quietening one does not lose the other.
 
@@ -240,49 +227,6 @@ and `./evals/verify-checkers.sh` asserts that each one accepts a real solution
 and rejects the specific near-miss it exists to catch. See
 [docs/evals.md](docs/evals.md).
 
-## What first contact changed
-
-Nine phases of design reasoning, then an hour against a real model. Two of the
-conclusions did not survive, and both were found by watching turn-level
-progress events rather than by anything the test suite could check.
-
-**A rule was enforced but never stated.** The system prompt said "read a file
-before *editing* it". The observation ledger also required it before
-*creating*, and nothing told the model that — so creating one file took four
-turns: `write` refused, `read` the missing path, `write` again, answer. Ten
-thousand tokens for one line of text. The model behaved well throughout; it
-read the error, understood the refusal, and recovered. The defect was upstream
-of it.
-
-**The fix for that did not work.** Stating the rule in the prompt changed
-nothing — the model still went straight to `write`, identical first call,
-measured twice. The commit is kept in history rather than squashed, because a
-failed fix with its measurement attached is worth more to the next reader than
-a tidy story.
-
-**So the rule itself was wrong.** Looking at why it existed: it was meant to
-stop a create from clobbering a concurrent creator. It never did. `write`
-stats the path under the session lock immediately before authorising, so "not
-there" holds at the moment of the write and creating it destroys nothing.
-Requiring an earlier read actually *widened* the race it was meant to close —
-one turn apart rather than microseconds. It cost a turn on every file creation
-and protected against nothing, and it is gone. Everything that can actually
-lose bytes is still refused.
-
-**Honest accounting on the result:** removing the refusal did not make runs
-shorter. Turn count stayed at four, because the model spent the freed turn on a
-redundant second read. A guaranteed-wasted turn was eliminated; no efficiency
-gain has been demonstrated. Saying otherwise would be exactly the kind of claim
-this suite exists to stop.
-
-A separate pass found a 402 "insufficient balance" from a provider being
-relayed to clients as a 400 "invalid request" — telling the caller to fix a
-request that was fine. And it found this README promising that upstream error
-bodies are "never echoed to clients", when in fact 4xx bodies *are* relayed
-after credential scrubbing. Overstating a security guarantee is worse than
-understating one: it invites the reader to stop checking whether the scrubbing
-is adequate, and the scrubbing is the entire control.
-
 ## Design notes
 
 A few decisions that are load-bearing, and why:
@@ -304,12 +248,11 @@ different values that `omitempty` renders identically. Twelve transcripts in
 
 **Read-before-edit as a version check, not a flag.** The ledger records a content
 hash, so a file rewritten by a shell command invalidates the observation and
-forces a re-read. Creating a file that is not there needs no prior read at all:
-the path is stat'd under the session lock immediately before the write, so
-nothing can be destroyed. Requiring an earlier read bought nothing and cost a
-measured turn on every file creation. Compaction marks entries stale, because
-otherwise the invariant quietly degrades into a rubber stamp once the contents
-leave context.
+forces a re-read. Creating a file that is not there needs no prior read: the
+path is stat'd under the session lock immediately before the write, so there is
+nothing to destroy, and requiring an earlier read would only widen the window
+between check and write. Compaction marks entries stale, because otherwise the
+invariant quietly degrades into a rubber stamp once the contents leave context.
 
 **Asymmetric truncation.** File views drop the tail and tell the model how to
 continue. Shell output drops the *head*, because the error in a failed build is
@@ -376,24 +319,6 @@ project does is syscall-shaped — `os.Root`, process groups, signal semantics,
 rlimits — and those are exactly the things that differ between the two. The
 SIGINT finding in phase 5 and the `/var`-to-`/private/var` one in phase 10 were
 both platform behaviour a single-OS matrix would have shipped.
-
-## Roadmap
-
-| Phase | Deliverable | Status |
-|---|---|---|
-| 0 | Skeleton: config, routing, health, graceful shutdown | done |
-| 1 | Wire types, passthrough proxy | done |
-| 2 | Streaming reader, delta accumulator, transcripts | done |
-| 3 | Workspace, path jail, fs-observation ledger, `read` + `glob` | done |
-| 4 | The agent loop, `grep` / `write` / `edit` | done |
-| 5 | `bash` and the `Shell` interface | done |
-| 6 | Session binding, agent streaming, `/v1/sessions` | done |
-| 7 | Monotonic tool guards, budgets | done |
-| 8 | Provider quirk profiles and autodetect | done |
-| 9 | Context compaction and token estimation | done |
-| 10 | Eval harness with programmatic checkers | done |
-| 11 | Resource ceilings, audit log, CI, suite expansion | done |
-| — | First real-model runs; suite pass not yet completed | in progress |
 
 ## Dependencies
 
