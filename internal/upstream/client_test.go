@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/logx"
 	"github.com/FirePing32/harness-api/internal/oai"
 )
 
@@ -258,6 +259,46 @@ func TestToAPIErrorMapsUpstreamAuthToBadGateway(t *testing.T) {
 	}
 }
 
+func TestToAPIErrorMapsBillingFailuresToBadGateway(t *testing.T) {
+	// Found by pointing the server at a real DeepSeek account with no credit:
+	// it answers 402 "Insufficient Balance", which was reaching the client as a
+	// 400 invalid_request. That is the same inversion the 401 case exists to
+	// prevent — it sends the caller off to rewrite a request that was fine,
+	// when the only thing that will help is topping up the server's account.
+	apiErr := ToAPIError(&Error{Status: http.StatusPaymentRequired, Body: "Insufficient Balance"})
+
+	if apiErr.Status != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", apiErr.Status)
+	}
+	if apiErr.Type == "invalid_request_error" {
+		t.Error("a billing failure is reported to the caller as a bad request")
+	}
+	if !strings.Contains(apiErr.Message, "billing") {
+		t.Errorf("message does not say what is actually wrong: %q", apiErr.Message)
+	}
+}
+
+func TestUpstreamErrorBodiesReachClientsOnlyAfterRedaction(t *testing.T) {
+	// The docs used to claim these bodies are never relayed. They are, for 4xx,
+	// because a provider saying "unknown model: gpt-5" is the most useful thing
+	// available — but only after readUpstreamError has scrubbed them. Asserting
+	// it here so the weaker, true guarantee is the one under test.
+	reflected := `{"error":{"message":"bad request, received Authorization: ` +
+		`Bearer sk-live-000000000000000000000000"}}`
+
+	apiErr := ToAPIError(&Error{
+		Status: http.StatusBadRequest,
+		Body:   logx.Redact(reflected), // as readUpstreamError stores it
+	})
+
+	if strings.Contains(apiErr.Message, "sk-live-000000000000000000000000") {
+		t.Fatalf("a reflected credential reached the client: %q", apiErr.Message)
+	}
+	if !strings.Contains(apiErr.Message, "REDACTED") {
+		t.Errorf("expected the redaction marker, got %q", apiErr.Message)
+	}
+}
+
 func TestToAPIErrorMapsStatuses(t *testing.T) {
 	tests := []struct {
 		upstreamStatus int
@@ -265,6 +306,7 @@ func TestToAPIErrorMapsStatuses(t *testing.T) {
 	}{
 		{http.StatusBadRequest, http.StatusBadRequest},
 		{http.StatusNotFound, http.StatusBadRequest},
+		{http.StatusPaymentRequired, http.StatusBadGateway},
 		{http.StatusTooManyRequests, http.StatusTooManyRequests},
 		{http.StatusInternalServerError, http.StatusBadGateway},
 		{http.StatusBadGateway, http.StatusBadGateway},

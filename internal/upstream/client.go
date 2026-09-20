@@ -398,6 +398,19 @@ func ToAPIError(err error) *oai.APIError {
 		e.Status = http.StatusBadGateway
 		return e
 
+	case upErr.Status == http.StatusPaymentRequired:
+		// The same inversion as 401, and it was reaching clients as a 400
+		// invalid_request until a real provider produced one: DeepSeek returns
+		// 402 "Insufficient Balance" for an account out of credit. Telling the
+		// caller their request was malformed sends them to rewrite a request
+		// that was fine, when the only thing that will help is somebody topping
+		// up the account this server authenticates with.
+		e := oai.NewAPIError(
+			"the upstream provider refused the request for billing reasons; "+
+				"the account behind this server's upstream.api_key needs attention", err)
+		e.Status = http.StatusBadGateway
+		return e
+
 	case upErr.Status == http.StatusTooManyRequests:
 		return oai.NewRateLimit("the upstream provider is rate limiting this server: " +
 			truncate(upErr.Body, 300))

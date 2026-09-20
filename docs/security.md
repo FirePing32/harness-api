@@ -220,10 +220,24 @@ list, `[]` disables the check) or turn the whole chain off with
 
 - The upstream API key is never logged. Redaction happens in the `slog`
   handler, so omitting it at a call site is not a possible mistake.
-- Upstream error bodies are **never** echoed to clients. Several providers
-  reflect the request they received, Authorization header included.
-- An upstream 401 is reported to the client as 502, because the client's
-  credential was fine — the server's was rejected.
+- Upstream error bodies **are** relayed to clients for 4xx statuses, after
+  being credential-scrubbed by `logx.Redact`. An earlier version of this
+  document claimed they were never relayed, which was a stronger promise than
+  the code makes and the wrong kind of error in a security note: it invites
+  the reader to stop asking whether the scrubbing is good enough.
+
+  The reason they are relayed is that a provider saying "unknown model" or
+  "unsupported parameter" is the most useful thing available to whoever has to
+  fix it. The scrubbing is a regex over `sk-…`, `Bearer …` and
+  `api_key`/`token` values, and it is what stands between a provider that
+  reflects the request — Authorization header included, which several do — and
+  a client that should not see it. Treat it as the load-bearing control it is.
+- Statuses that mean **this server's account is the problem** are replaced
+  entirely rather than relayed: 401 and 403 (credentials), and 402 (billing).
+  All three become 502. Passing them through would tell the caller to fix their
+  own token or their own request, which is the opposite of the truth — the 402
+  case was found by pointing the server at a real account that had run out of
+  credit, and it was arriving as a 400 "invalid request".
 - Failed authentication is logged at warn with the path and remote address,
   but never the token presented: a near-miss would put a credential in a log
   file, and a wrong guess is still somebody's real password somewhere else.

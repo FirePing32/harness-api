@@ -196,8 +196,10 @@ not contain an adversary.
   timeout and an output cap are ergonomics, not containment. Turn it off
   entirely with `shell.enabled=false` if you only want the file tools.
 - Credentials are redacted in the log handler rather than at call sites.
-  Upstream error bodies are never echoed to clients — several providers reflect
-  the request, including the API key.
+  Upstream 4xx bodies *are* relayed, because "unknown model" is worth seeing —
+  but only after credential scrubbing, since several providers reflect the
+  request including the API key. Anything meaning "this server's account is the
+  problem" (401, 402, 403) is replaced wholesale and returned as 502.
 - Tool calls pass through a deny-only guard chain: repeated identical calls,
   a destructive-command denylist, and commands that cannot finish in the time
   left. The denylist catches accidents, not adversaries.
