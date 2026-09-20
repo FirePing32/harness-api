@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/workspace"
 )
 
@@ -89,6 +90,7 @@ const (
 	CodePanic       = "TOOL_PANIC"
 	CodeCancelled   = "CANCELLED"
 	CodeDisabled    = "TOOL_DISABLED"
+	CodeDenied      = "DENIED_BY_GUARD"
 
 	// CodeNoMatch and CodeAmbiguous are the two edit failures the model is
 	// expected to recover from on its own, and the ones whose error text does
@@ -184,3 +186,19 @@ func cleanJSONError(err error) string {
 
 // errorAs is errors.As, re-exported for tests in this package.
 func errorAs(err error, target any) bool { return errors.As(err, target) }
+
+// Denied builds the result of a call a guard refused.
+//
+// It is an ordinary tool result rather than an error, so the refusal and its
+// reason go back into the conversation where the model can act on them. A
+// denial that surfaced as a transport error would end the request at exactly
+// the moment the model was about to change approach.
+func Denied(call oai.ToolCall, reason string) Result {
+	return Result{
+		CallID:  call.ID,
+		Tool:    call.Function.Name,
+		Content: reason,
+		IsError: true,
+		Code:    CodeDenied,
+	}
+}

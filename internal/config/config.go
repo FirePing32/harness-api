@@ -56,6 +56,7 @@ type Config struct {
 	Agent     Agent     `json:"agent"`
 	Workspace Workspace `json:"workspace"`
 	Shell     Shell     `json:"shell"`
+	Guards    Guards    `json:"guards"`
 	Log       Log       `json:"log"`
 }
 
@@ -140,6 +141,23 @@ type Shell struct {
 	SpillBytes int `json:"spill_bytes"`
 }
 
+// Guards configures the checks applied to a tool call before it runs.
+//
+// Guards can only deny, never permit, so turning one on can make the agent
+// more cautious but never less. DenyCommands is ergonomics rather than a
+// security boundary — see docs/security.md.
+type Guards struct {
+	Enabled bool `json:"enabled"`
+
+	// RepeatThreshold is how many identical calls to the same tool are allowed
+	// in one request before the next is refused. Zero uses the default.
+	RepeatThreshold int `json:"repeat_threshold"`
+
+	// DenyCommands are RE2 patterns matched against shell command text. Nil
+	// uses the built-in list; an empty non-nil list disables the check.
+	DenyCommands []string `json:"deny_commands"`
+}
+
 // Log configures the root logger.
 type Log struct {
 	Level  string `json:"level"`
@@ -177,6 +195,11 @@ func Default() Config {
 			MaxTimeout:     Duration(10 * time.Minute),
 			TailBytes:      30 << 10,
 			SpillBytes:     5 << 20,
+		},
+		Guards: Guards{
+			Enabled:         true,
+			RepeatThreshold: 3,
+			DenyCommands:    nil, // nil means the built-in list
 		},
 		Log: Log{Level: "info", Format: "text"},
 	}
@@ -343,6 +366,10 @@ func (c *Config) Validate() error {
 
 	if c.Server.MaxBodyBytes <= 0 {
 		errs = append(errs, errors.New("server.max_body_bytes must be > 0"))
+	}
+
+	if c.Guards.Enabled && c.Guards.RepeatThreshold < 0 {
+		errs = append(errs, errors.New("guards.repeat_threshold must be >= 0"))
 	}
 
 	if c.Shell.Enabled {

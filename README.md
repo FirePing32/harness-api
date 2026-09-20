@@ -4,11 +4,11 @@ An OpenAI-compatible HTTP server that runs an agentic coding loop against any
 OpenAI-compatible model. Point an existing client at it, and the model gets a
 workspace, file tools, and a shell.
 
-> **Status: usable, incomplete.** Phases 0–6 of 11 are done. The agent loop
+> **Status: usable, incomplete.** Phases 0–7 of 11 are done. The agent loop
 > works end to end with the full core tool set — `read`, `glob`, `grep`,
-> `edit`, `write`, `bash` — plus streaming and persistent sessions. Not yet
-> implemented: provider quirk profiles and context compaction. See
-> [Roadmap](#roadmap).
+> `edit`, `write`, `bash` — plus streaming, persistent sessions and tool
+> guards. Not yet implemented: provider quirk profiles and context
+> compaction. See [Roadmap](#roadmap).
 
 ## Why
 
@@ -155,6 +155,9 @@ not contain an adversary.
 - Credentials are redacted in the log handler rather than at call sites.
   Upstream error bodies are never echoed to clients — several providers reflect
   the request, including the API key.
+- Tool calls pass through a deny-only guard chain: repeated identical calls,
+  a destructive-command denylist, and commands that cannot finish in the time
+  left. The denylist catches accidents, not adversaries.
 
 ## Design notes
 
@@ -195,6 +198,12 @@ explicitly or lives in the filesystem, which persists anyway.
 **Tool error messages are implementation, not decoration.** They are the model's
 only recovery signal, so each one says what was wrong and what to do next.
 
+**Guards can only deny, never permit.** An allow result would make the outcome
+depend on registration order, and every new guard would have to be reasoned
+about against every existing one. Deny-only makes the chain monotonic: adding
+a guard can only make the system more restrictive, and ordering affects which
+*message* the model sees, nothing else.
+
 ## Development
 
 ```sh
@@ -214,8 +223,8 @@ gofmt -l ./internal ./cmd
 | 4 | The agent loop, `grep` / `write` / `edit` | done |
 | 5 | `bash` and the `Shell` interface | done |
 | 6 | Session binding, agent streaming, `/v1/sessions` | done |
-| 7 | Monotonic tool guards, budgets | next |
-| 8 | Provider quirk profiles and autodetect | |
+| 7 | Monotonic tool guards, budgets | done |
+| 8 | Provider quirk profiles and autodetect | next |
 | 9 | Context compaction and token estimation | |
 | 10 | Eval harness with programmatic checkers | |
 | 11 | Hardening, rlimits, audit log, docs | |

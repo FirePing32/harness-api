@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/guard"
 	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/tools"
 	"github.com/FirePing32/harness-api/internal/upstream"
@@ -638,3 +639,120 @@ func TestSplitSystemExtractsFromAnywhere(t *testing.T) {
 }
 
 func ptr[T any](v T) *T { return &v }
+
+func TestLoopGuardDenialReachesTheModelAsAToolResult(t *testing.T) {
+	// A denial is a normal turn, not a transport error. Ending the request
+	// here would stop it at exactly the moment the model was about to change
+	// approach — which is the whole point of denying rather than allowing.
+	h := newHarness(t, map[string]string{"a.txt": "x\n"}, []oai.Message{
+		assistantTools(toolCall("c1", "read", map[string]any{"path": "a.txt"})),
+		assistantText("understood, stopping"),
+	})
+	h.loop.guards = guard.NewChain(
+		guard.New("test-deny", func(guard.Execution) string {
+			return "denied for testing; do something else"
+		}),
+	)
+
+	res := h.run(t, "read it")
+
+	if res.Stop != StopComplete {
+		t.Fatalf("Stop = %q, want the run to continue after a denial", res.Stop)
+	}
+
+	sent := h.provider.lastRequest(t)
+	var toolMsg string
+	for _, m := range sent.Messages {
+		if m.Role == oai.RoleTool {
+			toolMsg = m.Content.String()
+		}
+	}
+	if !strings.Contains(toolMsg, "denied for testing") {
+		t.Errorf("the denial did not reach the model: %q", toolMsg)
+	}
+	if !strings.HasPrefix(toolMsg, "Error:") {
+		t.Errorf("a denial must be marked as an error result: %q", toolMsg)
+	}
+}
+
+func TestLoopGuardStopsTheToolFromRunning(t *testing.T) {
+	// The denial has to prevent the side effect, not merely report on it.
+	h := newHarness(t, map[string]string{"a.txt": "original\n"}, []oai.Message{
+		assistantTools(toolCall("c1", "write", map[string]any{
+			"path": "a.txt", "content": "overwritten\n",
+		})),
+		assistantText("ok"),
+	})
+	h.loop.guards = guard.NewChain(
+		guard.New("no-writes", func(ex guard.Execution) string {
+			if ex.Tool == "write" {
+				return "writes are not permitted in this request"
+			}
+			return ""
+		}),
+	)
+
+	h.run(t, "overwrite it")
+
+	if got := h.fileContent(t, "a.txt"); got != "original\n" {
+		t.Errorf("the denied write still happened: %q", got)
+	}
+}
+
+func TestLoopGuardSeesPriorCallsAcrossTurns(t *testing.T) {
+	// Loop detection is only possible from the request's history; a single
+	// call in isolation never looks wrong.
+	h := newHarness(t, map[string]string{"a.txt": "x\n"}, []oai.Message{
+		assistantTools(toolCall("c1", "read", map[string]any{"path": "a.txt"})),
+		assistantTools(toolCall("c2", "read", map[string]any{"path": "a.txt"})),
+		assistantTools(toolCall("c3", "read", map[string]any{"path": "a.txt"})),
+		assistantText("giving up"),
+	})
+
+	var seen []int
+	h.loop.guards = guard.NewChain(
+		guard.New("observer", func(ex guard.Execution) string {
+			seen = append(seen, len(ex.Prior))
+			return ""
+		}),
+	)
+
+	h.run(t, "read it repeatedly")
+
+	want := []int{0, 1, 2}
+	if len(seen) != len(want) {
+		t.Fatalf("guard saw %d calls, want %d", len(seen), len(want))
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Errorf("call %d saw %d prior calls, want %d", i, seen[i], want[i])
+		}
+	}
+}
+
+func TestLoopRepeatGuardBreaksAnIdenticalCallLoop(t *testing.T) {
+	// End to end with the real guard: a model stuck repeating one call is
+	// stopped well before the iteration ceiling burns the whole budget.
+	var turns []oai.Message
+	for range 10 {
+		turns = append(turns, assistantTools(
+			toolCall("c", "read", map[string]any{"path": "a.txt"})))
+	}
+	turns = append(turns, assistantText("stopped repeating"))
+
+	h := newHarness(t, map[string]string{"a.txt": "x\n"}, turns)
+	h.loop.guards = guard.NewChain(guard.RepeatTool(3))
+
+	h.run(t, "read it")
+
+	sent := h.provider.lastRequest(t)
+	var denials int
+	for _, m := range sent.Messages {
+		if m.Role == oai.RoleTool && strings.Contains(m.Content.String(), "cannot make progress") {
+			denials++
+		}
+	}
+	if denials == 0 {
+		t.Error("the repeat guard never fired on an identical-call loop")
+	}
+}

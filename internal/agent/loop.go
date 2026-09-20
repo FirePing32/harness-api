@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/guard"
 	"github.com/FirePing32/harness-api/internal/oai"
 	"github.com/FirePing32/harness-api/internal/tools"
 	"github.com/FirePing32/harness-api/internal/upstream"
@@ -19,6 +20,7 @@ import (
 type Loop struct {
 	upstream *upstream.Client
 	registry *tools.Registry
+	guards   *guard.Chain
 	cfg      config.Agent
 	log      *slog.Logger
 
@@ -30,6 +32,7 @@ type Loop struct {
 type Options struct {
 	Upstream *upstream.Client
 	Registry *tools.Registry
+	Guards   *guard.Chain
 	Config   config.Agent
 	Log      *slog.Logger
 	Dialect  tools.SchemaDialect
@@ -44,6 +47,7 @@ func New(opts Options) *Loop {
 	return &Loop{
 		upstream: opts.Upstream,
 		registry: opts.Registry,
+		guards:   opts.Guards,
 		cfg:      opts.Config,
 		log:      opts.Log,
 		dialect:  dialect,
@@ -108,6 +112,11 @@ func (l *Loop) RunWithEvents(ctx context.Context, s *workspace.Session, req *oai
 	definitions := registry.Definitions(l.dialect)
 	result := &Result{}
 
+	// Every tool call made in this request, oldest first. Guards need it:
+	// a single call in isolation never looks wrong, and the loops worth
+	// catching are only visible as a pattern across several.
+	var priorCalls []guard.Call
+
 	for {
 		if stop := tracker.BeginIteration(); stop.Terminal() {
 			return l.done(result, tracker, stop, emit), nil
@@ -150,11 +159,18 @@ func (l *Loop) RunWithEvents(ctx context.Context, s *workspace.Session, req *oai
 		l.log.Debug("tool calls requested",
 			"session_id", s.ID(), "turn", result.Turns, "count", len(assistant.ToolCalls))
 
-		results := l.runToolCalls(ctx, s, registry, assistant.ToolCalls, result.Turns, emit)
-		for _, r := range results {
+		results := l.runToolCalls(ctx, s, registry, assistant.ToolCalls,
+			result.Turns, tracker, priorCalls, emit)
+		for i, r := range results {
 			msg := r.ToMessage()
 			history = append(history, msg)
 			result.Messages = append(result.Messages, msg)
+			priorCalls = append(priorCalls, guard.Call{
+				Tool:    assistant.ToolCalls[i].Function.Name,
+				Args:    assistant.ToolCalls[i].Function.Arguments,
+				IsError: r.IsError,
+				Code:    r.Code,
+			})
 		}
 
 		if ctx.Err() != nil {
@@ -221,13 +237,16 @@ func (l *Loop) finish(r *Result, t *Tracker, stop StopReason) *Result {
 // around it observe a consistent filesystem. Treating "unsure" as exclusive
 // means a new tool is safe by default, and the cost of being wrong in that
 // direction is latency rather than corruption.
-func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry *tools.Registry, calls []oai.ToolCall, turn int, emit Emit) []tools.Result {
+func (l *Loop) runToolCalls(
+	ctx context.Context, s *workspace.Session, registry *tools.Registry,
+	calls []oai.ToolCall, turn int, tracker *Tracker, history []guard.Call, emit Emit,
+) []tools.Result {
 	results := make([]tools.Result, len(calls))
 	limit := max(l.cfg.MaxParallelTools, 1)
 
 	for i := 0; i < len(calls); {
 		if !l.concurrencySafe(registry, calls[i]) {
-			results[i] = l.invoke(ctx, s, registry, calls[i], turn, emit)
+			results[i] = l.invoke(ctx, s, registry, calls[i], turn, tracker, history, emit)
 			i++
 			continue
 		}
@@ -239,7 +258,7 @@ func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry 
 		}
 
 		if end-i == 1 {
-			results[i] = l.invoke(ctx, s, registry, calls[i], turn, emit)
+			results[i] = l.invoke(ctx, s, registry, calls[i], turn, tracker, history, emit)
 			i = end
 			continue
 		}
@@ -249,7 +268,7 @@ func (l *Loop) runToolCalls(ctx context.Context, s *workspace.Session, registry 
 			wg.Add(1)
 			go func(k int) {
 				defer wg.Done()
-				results[k] = l.invoke(ctx, s, registry, calls[k], turn, emit)
+				results[k] = l.invoke(ctx, s, registry, calls[k], turn, tracker, history, emit)
 			}(k)
 		}
 		wg.Wait()
@@ -270,8 +289,36 @@ func (l *Loop) concurrencySafe(registry *tools.Registry, call oai.ToolCall) bool
 	return t.ConcurrencySafe([]byte(call.Function.Arguments))
 }
 
-func (l *Loop) invoke(ctx context.Context, s *workspace.Session, registry *tools.Registry, call oai.ToolCall, turn int, emit Emit) tools.Result {
+func (l *Loop) invoke(
+	ctx context.Context, s *workspace.Session, registry *tools.Registry,
+	call oai.ToolCall, turn int, tracker *Tracker, history []guard.Call, emit Emit,
+) tools.Result {
 	args := json.RawMessage(call.Function.Arguments)
+
+	// Guards run before the tool, not inside it. A tool cannot see the rest of
+	// the request, and the checks worth having - this is the fourth identical
+	// call, there is not enough time left for this command - are only
+	// answerable from outside.
+	if reason, by := l.guards.Check(guard.Execution{
+		Tool:      call.Function.Name,
+		CallID:    call.ID,
+		Args:      args,
+		Turn:      turn,
+		SessionID: s.ID(),
+		Remaining: tracker.Remaining(),
+		Prior:     history,
+	}); reason != "" {
+		l.log.Info("tool call denied",
+			"session_id", s.ID(), "tool", call.Function.Name,
+			"call_id", call.ID, "guard", by)
+		emit.emit(Event{
+			Type: EventToolEnd, Turn: turn,
+			Tool: call.Function.Name, CallID: call.ID,
+			IsError: true, Code: tools.CodeDenied,
+			Summary: "denied by " + by,
+		})
+		return tools.Denied(call, reason)
+	}
 	emit.emit(Event{
 		Type: EventToolStart, Turn: turn,
 		Tool: call.Function.Name, CallID: call.ID, Args: args,

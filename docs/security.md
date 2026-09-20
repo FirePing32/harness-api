@@ -87,6 +87,36 @@ requires a non-interactive shell without job control to set SIGINT to *ignored*
 in background children, so `something &` inside `bash -c` cannot be interrupted
 by SIGINT at all — bash dies and the child keeps running.
 
+### Tool guards
+
+Every tool call is inspected before it runs. Guards can only **deny**, never
+permit, which makes the chain monotonic: no guard can undo another's refusal,
+and adding one can only ever make the agent more cautious. That removes an
+entire class of bug where "is this permitted" has a different answer depending
+on registration order.
+
+| Guard | What it stops |
+|---|---|
+| `repeat-tool` | A fourth identical call to the same tool in one request |
+| `command-denylist` | `rm -rf /`, fork bombs, `curl \| sh`, `mkfs`, `dd of=/dev/…`, `shutdown` |
+| `timeout-policy` | A command asking for more time than the request has left |
+
+A denied call comes back to the model as an ordinary tool result explaining
+what was refused and what to do instead, so it can change approach rather than
+rephrase the same command.
+
+**`command-denylist` is ergonomics, not a security boundary.** The patterns
+match command text, and command text has unlimited ways to say the same thing:
+`r''m -rf /`, `$(echo rm) -rf /`, a variable holding the path, a script that
+does it. Anything *trying* to get past it will. What it catches is the
+accident — a path constructed badly so that `rm -rf /tmp/build/` becomes
+`rm -rf /`. Patterns are anchored to command position, so a dangerous word
+inside a quoted string is not matched.
+
+Configure with `guards.deny_commands` (RE2 patterns; `null` uses the built-in
+list, `[]` disables the check) or turn the whole chain off with
+`guards.enabled=false`.
+
 ### Credentials
 
 - The upstream API key is never logged. Redaction happens in the `slog`
@@ -95,6 +125,9 @@ by SIGINT at all — bash dies and the child keeps running.
   reflect the request they received, Authorization header included.
 - An upstream 401 is reported to the client as 502, because the client's
   credential was fine — the server's was rejected.
+- Failed authentication is logged at warn with the path and remote address,
+  but never the token presented: a near-miss would put a credential in a log
+  file, and a wrong guess is still somebody's real password somewhere else.
 
 ## What is not bounded
 

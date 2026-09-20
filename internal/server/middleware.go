@@ -137,6 +137,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 		presented := bearerToken(r)
 		if presented == "" {
+			s.logAuthFailure(r, "missing bearer token")
 			oai.WriteError(w, oai.NewAuthError(
 				"missing bearer token; pass Authorization: Bearer <token>"),
 				RequestIDFromContext(r.Context()))
@@ -152,6 +153,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			}
 		}
 		if !ok {
+			s.logAuthFailure(r, "invalid bearer token")
 			oai.WriteError(w, oai.NewAuthError("invalid bearer token"),
 				RequestIDFromContext(r.Context()))
 			return
@@ -159,6 +161,21 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// logAuthFailure records a rejected request.
+//
+// At warn rather than debug: on a server whose whole purpose is running
+// commands, someone probing the endpoint is worth seeing without turning the
+// log level up. The token itself is never recorded — a near-miss would be a
+// credential in a log file, and a wrong guess is still somebody's real
+// password somewhere else.
+func (s *Server) logAuthFailure(r *http.Request, reason string) {
+	s.log.Warn("authentication failed",
+		"request_id", RequestIDFromContext(r.Context()),
+		"reason", reason,
+		"path", r.URL.Path,
+		"remote", r.RemoteAddr)
 }
 
 func bearerToken(r *http.Request) string {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/FirePing32/harness-api/internal/agent"
 	"github.com/FirePing32/harness-api/internal/config"
+	"github.com/FirePing32/harness-api/internal/guard"
 	"github.com/FirePing32/harness-api/internal/tools"
 	"github.com/FirePing32/harness-api/internal/upstream"
 	"github.com/FirePing32/harness-api/internal/workspace"
@@ -48,11 +49,49 @@ func DefaultTools(cfg *config.Config) *tools.Registry {
 	return r
 }
 
+// DefaultGuards builds the guard chain from configuration.
+//
+// Order affects only which message a denied call gets back, never whether it
+// is denied: guards cannot permit, so no later guard can undo an earlier
+// refusal. Cheap checks come first so the expensive ones are rarely reached.
+func DefaultGuards(cfg *config.Config) (*guard.Chain, []error) {
+	chain := guard.NewChain()
+	if !cfg.Guards.Enabled {
+		return chain, nil
+	}
+
+	chain.Add(guard.RepeatTool(cfg.Guards.RepeatThreshold))
+
+	if cfg.Shell.Enabled {
+		patterns := cfg.Guards.DenyCommands
+		if patterns == nil {
+			patterns = guard.DefaultDeniedCommands
+		}
+		denylist, errs := guard.CommandDenylist(patterns)
+		chain.Add(denylist)
+		chain.Add(guard.TimeoutPolicy())
+		return chain, errs
+	}
+
+	return chain, nil
+}
+
 // New builds a Server and registers its routes.
 func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 	sessions, err := workspace.NewManager(cfg.Workspace, log)
 	if err != nil {
 		return nil, err
+	}
+
+	guards, guardErrs := DefaultGuards(cfg)
+	for _, err := range guardErrs {
+		// A bad pattern narrows what is blocked rather than stopping the server,
+		// so it is a warning. Silence would leave an operator believing a rule
+		// they wrote is in force when it never compiled.
+		log.Warn("guard configuration ignored", "error", err)
+	}
+	if guards.Len() > 0 {
+		log.Info("tool guards active", "guards", guards.Names())
 	}
 
 	client := upstream.New(cfg.Upstream, log)
@@ -64,6 +103,7 @@ func New(cfg *config.Config, log *slog.Logger) (*Server, error) {
 		agent: agent.New(agent.Options{
 			Upstream: client,
 			Registry: DefaultTools(cfg),
+			Guards:   guards,
 			Config:   cfg.Agent,
 			Log:      log,
 		}),
